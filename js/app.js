@@ -46,6 +46,16 @@
     confirmationId: null
   };
 
+  // ---------- Simple / cognitive-load mode ----------
+  var SIMPLE_MODE_KEY = "webmcp-appointment:simple-mode";
+  var simpleMode = false;
+  try {
+    simpleMode = localStorage.getItem(SIMPLE_MODE_KEY) === "1";
+  } catch (e) {
+    // localStorage can throw in some locked-down/private-browsing contexts;
+    // fall back to the default (off) rather than breaking the page.
+  }
+
   // ---------- DOM refs ----------
   var els = {};
   FIELD_ORDER.forEach(function (f) { els[f] = document.getElementById(f); });
@@ -58,6 +68,9 @@
   var resetBtn = document.getElementById("reset-btn");
   var resetConfirmRow = document.getElementById("reset-confirm-row");
   var manualReviewBtn = document.getElementById("manual-review-btn");
+  var toolsPanel = document.getElementById("tools-panel");
+  var simpleModeToggle = document.getElementById("simple-mode-toggle");
+  var actionLog = document.getElementById("action-log");
 
   // ---------- Populate static selects ----------
   APPOINTMENT_TYPES.forEach(function (t) {
@@ -94,11 +107,21 @@
   refreshTimeOptions();
 
   // ---------- Field error / filled-state display ----------
+  // Error text is written once by validateField and reused verbatim for both
+  // the tool response (read by an agent) and the inline DOM message (read by
+  // a human). In simple mode we trim the agent-directed "call this tool"
+  // clause from the human-facing copy only — the canonical message returned
+  // to tools is never altered.
+  function humanizeErrorForDisplay(message) {
+    if (!simpleMode || !message) return message;
+    return message.replace(/\s*Call describe_current_state to see the [^.]*\.\s*$/, "");
+  }
+
   function setFieldError(field, message) {
     var errEl = document.getElementById(field + "-error");
     var input = els[field];
     var wrap = document.getElementById("field-" + field);
-    if (errEl) errEl.textContent = message || "";
+    if (errEl) errEl.textContent = message ? humanizeErrorForDisplay(message) : "";
     if (input) input.setAttribute("aria-invalid", message ? "true" : "false");
     if (wrap) wrap.classList.toggle("filled", !message && !!state.fields[field]);
   }
@@ -165,20 +188,45 @@
   function renderReview() {
     reviewFields.innerHTML = "";
     var rows = [
-      ["Name", state.fields.full_name],
-      ["Email", state.fields.email],
-      ["Phone", state.fields.phone || "(not provided)"],
-      ["Appointment type", (APPOINTMENT_TYPES.filter(function (t) { return t.value === state.fields.appointment_type; })[0] || {}).label || state.fields.appointment_type],
-      ["Date", humanDate(state.fields.date)],
-      ["Time", TIME_LABELS[state.fields.time] || state.fields.time],
-      ["Notes", state.fields.notes || "(none)"]
+      ["full_name", "Name", state.fields.full_name],
+      ["email", "Email", state.fields.email],
+      ["phone", "Phone", state.fields.phone || "(not provided)"],
+      ["appointment_type", "Appointment type", (APPOINTMENT_TYPES.filter(function (t) { return t.value === state.fields.appointment_type; })[0] || {}).label || state.fields.appointment_type],
+      ["date", "Date", humanDate(state.fields.date)],
+      ["time", "Time", TIME_LABELS[state.fields.time] || state.fields.time],
+      ["notes", "Notes", state.fields.notes || "(none)"]
     ];
     rows.forEach(function (r) {
-      var dt = document.createElement("dt"); dt.textContent = r[0];
-      var dd = document.createElement("dd"); dd.textContent = r[1];
-      reviewFields.appendChild(dt); reviewFields.appendChild(dd);
+      var field = r[0], label = r[1], value = r[2];
+      var dt = document.createElement("dt"); dt.textContent = label;
+      var dd = document.createElement("dd");
+      var valueSpan = document.createElement("span");
+      valueSpan.className = "review-value";
+      valueSpan.textContent = value;
+      var editBtn = document.createElement("button");
+      editBtn.type = "button";
+      editBtn.className = "edit-field-btn";
+      editBtn.textContent = "Edit";
+      editBtn.setAttribute("data-field", field);
+      editBtn.setAttribute("aria-label", "Edit " + label.toLowerCase());
+      dd.appendChild(valueSpan);
+      dd.appendChild(editBtn);
+      reviewFields.appendChild(dt);
+      reviewFields.appendChild(dd);
     });
   }
+
+  // Targeted undo: jump straight back to one field from the review screen,
+  // instead of the generic "Go back and edit" (which returns focus to the
+  // top of the form) or the full "Start over" reset.
+  reviewFields.addEventListener("click", function (e) {
+    var btn = e.target.closest ? e.target.closest("button[data-field]") : null;
+    if (!btn) return;
+    var field = btn.getAttribute("data-field");
+    setStatus("draft");
+    announce("Editing " + fieldLabel(field) + ". Update it, then click Review my appointment again when ready.");
+    if (els[field]) els[field].focus();
+  });
 
   function stateSummaryText() {
     var lines = [];
@@ -232,7 +280,10 @@
   });
 
   manualReviewBtn.addEventListener("click", function () {
-    var res = toolConfirmAndSubmit();
+    // Runs through the same instrumented path as a real agent tool call
+    // (see runTool below), so it shows up in the Action log too — clicking
+    // this button performs literally the same action confirm_and_submit does.
+    var res = runTool("confirm_and_submit", {});
     if (res.isError) {
       var problems = missingOrInvalidFields();
       if (problems.length) {
@@ -393,6 +444,80 @@
     }
   ];
 
+  // ---------- Action log: every tool call, from any source, timestamped ----------
+  function logTimestamp() {
+    var d = new Date();
+    var hh = String(d.getHours()).padStart(2, "0");
+    var mm = String(d.getMinutes()).padStart(2, "0");
+    var ss = String(d.getSeconds()).padStart(2, "0");
+    return hh + ":" + mm + ":" + ss;
+  }
+
+  function logAction(name, args, result) {
+    var emptyLi = document.getElementById("action-log-empty");
+    if (emptyLi) emptyLi.remove();
+
+    var isError = !!(result && result.isError);
+    var text = (result && result.content && result.content[0] && result.content[0].text) || "";
+
+    var li = document.createElement("li");
+    li.className = "action-log-entry " + (isError ? "error" : "result");
+
+    var time = document.createElement("span");
+    time.className = "action-log-time";
+    time.textContent = logTimestamp();
+
+    var call = document.createElement("div");
+    call.className = "action-log-call";
+    call.textContent = name + "(" + JSON.stringify(args) + ")";
+
+    var out = document.createElement("div");
+    out.className = "action-log-result";
+    out.textContent = (isError ? "✗ " : "✓ ") + text;
+
+    li.appendChild(time);
+    li.appendChild(call);
+    li.appendChild(out);
+    actionLog.appendChild(li);
+    actionLog.scrollTop = actionLog.scrollHeight;
+  }
+
+  function clearActionLog() {
+    actionLog.innerHTML = "";
+    var li = document.createElement("li");
+    li.id = "action-log-empty";
+    li.className = "action-log-empty";
+    li.textContent = "No tool calls yet.";
+    actionLog.appendChild(li);
+  }
+
+  // Wraps a tool's raw execute function so every call — whether it comes
+  // from a real agent via document.modelContext, the manual test console,
+  // or the "Review my appointment" button aliasing confirm_and_submit — is
+  // logged identically and never throws past this boundary.
+  function instrumentedExecute(def) {
+    return function (args) {
+      var argsForLog = (args === undefined || args === null) ? {} : args;
+      var result;
+      try {
+        result = def.execute(argsForLog);
+      } catch (e) {
+        result = { content: [{ type: "text", text: "Tool \"" + def.name + "\" threw an unexpected error: " + e.message }], isError: true };
+      }
+      logAction(def.name, argsForLog, result);
+      return result;
+    };
+  }
+
+  var TOOLS_BY_NAME = {};
+  TOOL_DEFS.forEach(function (def) {
+    def.run = instrumentedExecute(def);
+    TOOLS_BY_NAME[def.name] = def;
+  });
+  function runTool(name, args) {
+    return TOOLS_BY_NAME[name].run(args);
+  }
+
   // ---------- Register with the real WebMCP API when available ----------
   var banner = document.getElementById("webmcp-banner");
   var mcpTarget = null;
@@ -409,7 +534,7 @@
           name: def.name,
           description: def.description,
           inputSchema: def.inputSchema,
-          execute: def.execute
+          execute: def.run
         });
       } catch (e) {
         console.error("Failed to register WebMCP tool", def.name, e);
@@ -425,7 +550,7 @@
   // ---------- Tool call console (calls the SAME functions as real registration) ----------
   var consoleToolSelect = document.getElementById("console-tool");
   var consoleArgs = document.getElementById("console-args");
-  var consoleLog = document.getElementById("console-log");
+  var consoleJsonError = document.getElementById("console-json-error");
 
   var EXAMPLE_ARGS = {
     describe_current_state: {},
@@ -446,39 +571,77 @@
   consoleToolSelect.addEventListener("change", loadExample);
   loadExample();
 
-  function logLine(cls, text) {
-    var div = document.createElement("div");
-    div.className = cls;
-    div.textContent = text;
-    consoleLog.appendChild(div);
-    consoleLog.scrollTop = consoleLog.scrollHeight;
-  }
-
   document.getElementById("console-run").addEventListener("click", function () {
     var name = consoleToolSelect.value;
-    var def = TOOL_DEFS.filter(function (d) { return d.name === name; })[0];
     var args;
     try {
       args = consoleArgs.value.trim() ? JSON.parse(consoleArgs.value) : {};
+      consoleJsonError.textContent = "";
     } catch (e) {
-      logLine("error", "Invalid JSON arguments: " + e.message);
+      // Not a real tool invocation (no valid arguments to call with), so
+      // this deliberately does NOT go into the Action log below.
+      consoleJsonError.textContent = "Invalid JSON arguments: " + e.message;
       return;
     }
-    logLine("call", "→ " + name + "(" + JSON.stringify(args) + ")");
-    var result;
-    try {
-      result = def.execute(args);
-    } catch (e) {
-      logLine("error", "✗ threw: " + e.message);
-      return;
-    }
-    var text = (result && result.content && result.content[0] && result.content[0].text) || JSON.stringify(result);
-    logLine(result && result.isError ? "error" : "result", (result && result.isError ? "✗ " : "✓ ") + text);
+    runTool(name, args);
   });
 
   document.getElementById("console-clear").addEventListener("click", function () {
-    consoleLog.innerHTML = "";
+    clearActionLog();
   });
+
+  // ---------- Simple / cognitive-load mode wiring ----------
+  function applySimpleHints() {
+    var nodes = document.querySelectorAll("[data-simple-text]");
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (!el.dataset.defaultText) el.dataset.defaultText = el.textContent;
+      el.textContent = simpleMode ? el.dataset.simpleText : el.dataset.defaultText;
+    }
+  }
+
+  function refreshDisplayedErrors() {
+    // Re-render any currently-visible field errors so the simple-mode
+    // language trim (or its reversal) applies immediately, not just to the
+    // next validation run. Goes through setFieldError (not a direct
+    // textContent write) so aria-invalid and the "filled" checkmark stay in
+    // sync — a rejected value is never stored in state.fields, so this can
+    // also legitimately clear a stale error for a value that was attempted
+    // but never actually took effect.
+    FIELD_ORDER.forEach(function (f) {
+      var errEl = document.getElementById(f + "-error");
+      if (!errEl || !errEl.textContent) return;
+      var msg = validateField(f, state.fields[f]);
+      setFieldError(f, msg);
+    });
+  }
+
+  function applyModeUI(on) {
+    document.body.classList.toggle("simple-mode", on);
+    simpleModeToggle.setAttribute("aria-pressed", on ? "true" : "false");
+    simpleModeToggle.innerHTML = "";
+    var icon = document.createElement("span");
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = on ? "✅" : "🔎";
+    simpleModeToggle.appendChild(icon);
+    simpleModeToggle.appendChild(document.createTextNode(" Simple mode: " + (on ? "On" : "Off")));
+    if (toolsPanel) toolsPanel.hidden = on;
+    applySimpleHints();
+    refreshDisplayedErrors();
+  }
+
+  simpleModeToggle.addEventListener("click", function () {
+    simpleMode = !simpleMode;
+    applyModeUI(simpleMode);
+    try {
+      localStorage.setItem(SIMPLE_MODE_KEY, simpleMode ? "1" : "0");
+    } catch (e) {
+      // Ignore storage failures — the toggle still works for this page view.
+    }
+    announce(simpleMode ? "Simple mode turned on. Larger text, plainer wording, and the developer tool panel is hidden." : "Simple mode turned off.");
+  });
+
+  applyModeUI(simpleMode); // apply any persisted preference silently, no announce
 
   // Initial announce
   announce("Page ready. " + FIELD_ORDER.length + " fields to complete, " + REQUIRED_FIELDS.length + " required.");

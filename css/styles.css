@@ -252,21 +252,120 @@ button.danger.filled {
   border: 1px solid var(--line);
   border-radius: 6px;
 }
-#console-log {
-  background: #10141c;
-  color: #d7e2f0;
+.action-log {
+  list-style: none;
+  margin: 0 0 1.25rem 0;
+  padding: 0;
+  border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 0.75rem;
-  font-family: ui-monospace, Consolas, monospace;
-  font-size: 0.8rem;
-  max-height: 340px;
+  max-height: 320px;
   overflow-y: auto;
-  white-space: pre-wrap;
+  background: #fbfcfd;
+}
+.action-log-empty {
+  padding: 0.75rem 0.9rem;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+.action-log-entry {
+  padding: 0.55rem 0.9rem;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.85rem;
+}
+.action-log-entry:last-child { border-bottom: none; }
+.action-log-time {
+  display: block;
+  color: var(--muted);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.75rem;
+  margin-bottom: 0.15rem;
+}
+.action-log-call {
+  font-family: ui-monospace, Consolas, monospace;
+  color: var(--accent);
   word-break: break-word;
 }
-#console-log .call { color: #6db8ff; }
-#console-log .result { color: #9ce0a8; }
-#console-log .error { color: #ff9a9a; }
+.action-log-result {
+  margin-top: 0.2rem;
+  word-break: break-word;
+}
+.action-log-entry.error .action-log-result { color: var(--err-ink); font-weight: 600; }
+.action-log-entry.result .action-log-result { color: var(--ok-ink); }
+#console-args {
+  width: 100%;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.85rem;
+  min-height: 4.5rem;
+  padding: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  margin-bottom: 0.4rem;
+}
+
+/* ---------- Review panel per-field edit links ---------- */
+.review-value { margin-right: 0.5rem; }
+.edit-field-btn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  text-decoration: underline;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0.1rem 0.2rem;
+}
+.edit-field-btn:hover { color: #164a89; }
+
+/* ---------- Simple mode toggle bar ---------- */
+#mode-bar {
+  max-width: 1100px;
+  margin: 0.75rem auto 0;
+  padding: 0 1.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+#simple-mode-toggle {
+  background: #fff;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 999px;
+  padding: 0.4rem 0.9rem;
+  font-weight: 700;
+  font-size: 0.85rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+#simple-mode-toggle[aria-pressed="true"] {
+  background: var(--accent);
+  color: #fff;
+}
+#mode-bar .hint { margin: 0; }
+
+/* ---------- Simple / cognitive-load mode ---------- */
+body.simple-mode { font-size: 1.1rem; }
+body.simple-mode main { grid-template-columns: 1fr; max-width: 760px; }
+body.simple-mode section.panel { padding: 1.75rem 2rem 2rem; }
+body.simple-mode fieldset { padding: 1.5rem; margin-bottom: 1.5rem; }
+body.simple-mode .field { margin-bottom: 1.6rem; }
+body.simple-mode label { font-size: 1.05rem; margin-bottom: 0.5rem; }
+body.simple-mode .hint { font-size: 1rem; }
+body.simple-mode input[type=text],
+body.simple-mode input[type=email],
+body.simple-mode input[type=tel],
+body.simple-mode select,
+body.simple-mode textarea {
+  padding: 0.85rem 0.75rem;
+  font-size: 1.1rem;
+}
+body.simple-mode button.secondary,
+body.simple-mode button.danger,
+body.simple-mode #confirm-btn,
+body.simple-mode #manual-review-btn {
+  padding: 0.85rem 1.5rem;
+  font-size: 1.05rem;
+}
 footer {
   max-width: 1100px;
   margin: 0 auto;

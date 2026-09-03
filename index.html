@@ -16,6 +16,13 @@
 
 <div id="webmcp-banner" role="status"></div>
 
+<div id="mode-bar">
+  <button type="button" id="simple-mode-toggle" aria-pressed="false">
+    <span aria-hidden="true">🔎</span> Simple mode: Off
+  </button>
+  <span class="hint">Larger text, plainer wording, and hides the developer-facing tool panel below.</span>
+</div>
+
 <main id="main-content">
   <section class="panel" aria-labelledby="form-heading">
     <h2 id="form-heading">Appointment details <span id="status-badge" class="status-badge status-draft">Draft</span></h2>
@@ -28,7 +35,7 @@
         <div class="field" id="field-full_name">
           <label for="full_name">Full name <span class="req-mark" aria-hidden="true">*</span></label>
           <input type="text" id="full_name" name="full_name" aria-required="true" aria-invalid="false" aria-describedby="full_name-hint full_name-error" autocomplete="name" />
-          <div class="hint" id="full_name-hint">As it should appear on your visit record.</div>
+          <div class="hint" id="full_name-hint" data-simple-text="Type your full name.">As it should appear on your visit record.</div>
           <div class="error-msg" id="full_name-error" role="alert"></div>
         </div>
 
@@ -42,7 +49,7 @@
         <div class="field" id="field-phone">
           <label for="phone">Phone (optional)</label>
           <input type="tel" id="phone" name="phone" aria-invalid="false" aria-describedby="phone-hint phone-error" autocomplete="tel" />
-          <div class="hint" id="phone-hint">At least 7 digits. Used only if we need to reach you about this visit.</div>
+          <div class="hint" id="phone-hint" data-simple-text="Optional. We'll only call if we need to reach you.">At least 7 digits. Used only if we need to reach you about this visit.</div>
           <div class="error-msg" id="phone-error" role="alert"></div>
         </div>
       </fieldset>
@@ -63,7 +70,7 @@
           <select id="date" name="date" aria-required="true" aria-invalid="false" aria-describedby="date-hint date-error">
             <option value="">— Select a date —</option>
           </select>
-          <div class="hint" id="date-hint">Only weekdays with open slots are listed.</div>
+          <div class="hint" id="date-hint" data-simple-text="Pick a day below. Only open days are shown.">Only weekdays with open slots are listed.</div>
           <div class="error-msg" id="date-error" role="alert"></div>
         </div>
 
@@ -72,14 +79,14 @@
           <select id="time" name="time" aria-required="true" aria-invalid="false" aria-describedby="time-hint time-error">
             <option value="">— Select a date first —</option>
           </select>
-          <div class="hint" id="time-hint">Times already booked by other patients are not listed.</div>
+          <div class="hint" id="time-hint" data-simple-text="Pick a time below. Booked times are hidden.">Times already booked by other patients are not listed.</div>
           <div class="error-msg" id="time-error" role="alert"></div>
         </div>
 
         <div class="field" id="field-notes">
           <label for="notes">Notes for the clinician (optional)</label>
           <textarea id="notes" name="notes" aria-invalid="false" aria-describedby="notes-hint notes-error" maxlength="300"></textarea>
-          <div class="hint" id="notes-hint">Up to 300 characters.</div>
+          <div class="hint" id="notes-hint" data-simple-text="Optional. Add anything the doctor should know.">Up to 300 characters.</div>
           <div class="error-msg" id="notes-error" role="alert"></div>
         </div>
       </fieldset>
@@ -113,7 +120,7 @@
     </div>
   </section>
 
-  <section class="panel" aria-labelledby="tools-heading">
+  <section class="panel" id="tools-panel" aria-labelledby="tools-heading">
     <h2 id="tools-heading">WebMCP tools registered by this page</h2>
     <ul class="tool-list">
       <li><code>describe_current_state</code> — reports every field's value, which required fields are still missing, current status, and available options.</li>
@@ -123,8 +130,14 @@
     </ul>
     <p class="hint">"Start over" is deliberately <strong>not</strong> a tool either, for the same reason: an agent can help you fill the form, but only you can throw away your own progress or finalize a booking.</p>
 
+    <h3 id="actionlog-heading">Action log</h3>
+    <p class="hint">Every call to a WebMCP tool — made by a real agent through <code>document.modelContext</code>, by clicking "Review my appointment" (which runs the same <code>confirm_and_submit</code> logic), or manually below — is recorded here with a timestamp, so you can audit exactly what happened to this form and when.</p>
+    <ol id="action-log" class="action-log" role="log" aria-labelledby="actionlog-heading" aria-live="polite" aria-relevant="additions" tabindex="0">
+      <li id="action-log-empty" class="action-log-empty">No tool calls yet.</li>
+    </ol>
+
     <h3>Tool call console</h3>
-    <p class="hint">This calls the exact same functions registered with <code>document.modelContext</code> — useful for testing in any browser, even one without WebMCP support yet.</p>
+    <p class="hint">This calls the exact same functions registered with <code>document.modelContext</code> — useful for testing in any browser, even one without WebMCP support yet. Calls made here appear in the Action log above.</p>
     <div class="console-row">
       <label for="console-tool" style="margin:0;">Tool</label>
       <select id="console-tool"></select>
@@ -133,7 +146,7 @@
     </div>
     <label for="console-args">Arguments (JSON)</label>
     <textarea id="console-args" spellcheck="false"></textarea>
-    <div id="console-log" role="log" aria-live="polite" aria-relevant="additions" aria-label="Tool call log" tabindex="0"></div>
+    <div id="console-json-error" class="error-msg" role="alert"></div>
   </section>
 </main>
 

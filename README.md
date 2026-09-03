@@ -15,11 +15,13 @@ Source: **[github.com/pipaniaastha/wepmcp-appointment](https://github.com/pipani
 - [What this project does](#what-this-project-does)
 - [The four tools](#the-four-tools)
 - [Why `confirm_and_submit` can't finalize the booking](#why-confirm_and_submit-cant-finalize-the-booking)
+- [Beyond the four tools](#beyond-the-four-tools)
 - [Project structure](#project-structure)
 - [Accessibility](#accessibility)
 - [Running it locally](#running-it-locally)
 - [Testing](#testing)
 - [Testing with a WebMCP-capable browser or agent](#testing-with-a-webmcp-capable-browser-or-agent)
+- [Adopting this pattern on your own site](#adopting-this-pattern-on-your-own-site)
 - [Deployment](#deployment)
 - [Design decisions worth knowing about](#design-decisions-worth-knowing-about)
 
@@ -132,6 +134,72 @@ The same reasoning is why **"Start over" is a plain button, not a tool**
 can fill in your form shouldn't also be able to unilaterally throw away your
 in-progress data.
 
+## Beyond the four tools
+
+Three more features round out the demo. None of them add a fifth WebMCP
+tool — that's deliberate, and consistent with the reasoning above: only
+capabilities an agent legitimately needs become tools; everything else stays
+human-only UI.
+
+### Action log — the audit trail
+
+The right-hand panel has an **Action log**: a timestamped, chronological
+record of every tool call, regardless of where it came from — a real agent
+calling through `document.modelContext`, a manual run from the Tool Call
+Console below it, or a click on "Review my appointment" (which runs the
+exact same `confirm_and_submit` logic a tool call would). Every entry shows
+the time, the tool name and arguments, and whether it succeeded or failed.
+
+This works because there is exactly **one** entry point for tool logic in
+`js/app.js`: `TOOL_DEFS.forEach(...)` wraps each tool's raw `execute`
+function with `instrumentedExecute()`, which logs the call and then invokes
+the real implementation — catching and logging any unexpected exception
+rather than letting it escape to the calling agent. That single wrapped
+function (`def.run`) is what gets registered with `document.modelContext`,
+what the console's "Run tool" button calls, and what "Review my appointment"
+calls via `runTool("confirm_and_submit", {})`. There's no second, unlogged
+path to the same functionality — if it's a tool call, it's in the log.
+
+### Targeted per-field edit from the review screen
+
+Once a booking is staged (`confirm_and_submit` has run and the review panel
+is showing), each row in the review — Name, Email, Phone, Appointment type,
+Date, Time, Notes — has its own small **Edit** link. Clicking it drops the
+booking back to `draft` (same as any edit does) and moves keyboard focus
+directly into *that* field, so fixing "oh, wrong date" takes one click and
+zero scrolling.
+
+This sits between two existing, coarser options: **"Go back and edit"**
+(returns to the top of the form with no specific target) and **"Start
+over"** (destroys every field and starts a blank booking). All three remain
+available; "Edit \<field\>" is just the fastest path for the common case of
+one wrong detail in an otherwise-correct booking.
+
+### Simple / cognitive-load mode
+
+The "Simple mode" toggle above the form is a single, reversible UI mode
+aimed at reducing cognitive load, addressing three things at once:
+
+- **Fewer visible options at once** — it hides the entire right-hand
+  developer/agent-facing panel (tool list, Action log, Tool Call Console),
+  which is irrelevant to someone just trying to book an appointment. The
+  page collapses to a single, focused column.
+- **Plainer language** — the hint text under each field switches to a
+  shorter, more direct phrasing (e.g. "Only weekdays with open slots are
+  listed." becomes "Pick a day below. Only open days are shown."), and
+  inline field errors drop the agent-directed clause that doesn't help a
+  human ("Call describe_current_state to see the valid options.") while
+  keeping the actual problem description intact. Critically, this only
+  changes what's *displayed in the DOM* — the text returned to an agent by
+  a tool call is never altered, since an agent still needs the precise,
+  complete version.
+- **Larger spacing** — bigger type, more padding around fields and buttons,
+  and more breathing room between form sections.
+
+The preference is remembered per-browser via `localStorage` (falling back
+silently to "off" if storage is unavailable, e.g. in a locked-down private
+browsing mode) and is fully reversible with one click.
+
 ## Project structure
 
 ```
@@ -147,8 +215,8 @@ webmcp-appointment/
 │   │                        same reason: testable head-on in Node without a
 │   │                        browser.
 │   └── app.js               State, DOM wiring, the four WebMCP tool
-│                            implementations + registration, and the Tool
-│                            Call Console.
+│                            implementations + registration, the Action log,
+│                            the Tool Call Console, and Simple mode.
 ├── tests/
 │   └── validation.test.js   node:test unit tests for js/data.js and
 │                            js/validation.js (36 cases).
@@ -209,6 +277,16 @@ implemented deliberately, not left as an afterthought:
   `<button>`, so keyboard operability (Tab order, Space/Enter activation,
   native `<select>` arrow-key behavior) comes for free and correctly, rather
   than being reimplemented and risking bugs.
+- **The per-field "Edit" links in the review panel** move focus directly
+  into the target field rather than just returning to draft status, so
+  fixing one detail doesn't require re-locating it in a long form.
+- **The Action log** uses `role="log"` (implying a polite, additions-only
+  live region) so new entries are announced without re-reading the whole
+  history, and its own heading is linked via `aria-labelledby`.
+- **"Simple mode" is a standard accessible toggle button**
+  (`aria-pressed="true"/"false"`, not a checkbox pretending to be a link or
+  vice versa), and switching it announces what changed via the polite status
+  region.
 - **The destructive "Start over" action never uses a blocking native
   `confirm()` dialog** (those are inaccessible to some assistive tech and
   block all other page interaction); instead it reveals an inline,
@@ -288,6 +366,83 @@ validation path, plus a UI/accessibility checklist.
    to click the button.
 3. Either way, open the browser's DevTools console — the page logs a
    `console.error` if a tool fails to register, otherwise it stays silent.
+4. Watch the **Action log** in the right-hand panel while an agent works —
+   every tool call it makes appears there immediately with a timestamp, so
+   you can see exactly what it did without reading the DevTools console.
+
+## Adopting this pattern on your own site
+
+You don't need this whole project to add agent-operable tools to your own
+page — the pattern is small enough to copy directly. Here's the recipe this
+repo follows, generalized:
+
+1. **Identify the handful of state transitions an agent should be able to
+   drive**, and phrase them as tools. A good starting set for almost any
+   task mirrors this project's four:
+   - one **read-only "describe state" tool** (what's filled in, what's
+     missing, what the valid options are right now — an agent should be
+     able to call this first and after anything else to reorient itself);
+   - one **"what can I do next" tool** (saves the agent from re-deriving
+     your state machine's rules itself);
+   - one or more **narrow "set one thing" tools** (validate exactly like
+     your human-facing UI does, and write into the *real* DOM/state — never
+     a shadow copy an agent updates that the human-visible page doesn't
+     reflect);
+   - if there's a consequential step, a **"stage for confirmation" tool**
+     that never itself performs the consequential action (see next point).
+
+2. **Write each tool as a plain function returning a consistent shape**:
+
+   ```js
+   function myTool(args) {
+     // ...validate/act on args...
+     return {
+       content: [{ type: "text", text: "Human-readable result, written for an LLM to read." }],
+       isError: false // set true on failure — still return, don't throw
+     };
+   }
+   ```
+
+3. **Register with feature detection**, since WebMCP support is still
+   inconsistent across browsers:
+
+   ```js
+   var mcpTarget =
+     (typeof document !== "undefined" && "modelContext" in document) ? document.modelContext :
+     (typeof navigator !== "undefined" && "modelContext" in navigator) ? navigator.modelContext :
+     null;
+
+   if (mcpTarget && typeof mcpTarget.registerTool === "function") {
+     mcpTarget.registerTool({
+       name: "my_tool",
+       description: "One sentence an LLM will use to decide when to call this.",
+       inputSchema: { type: "object", properties: { /* JSON Schema */ }, required: [], additionalProperties: false },
+       execute: myTool
+     });
+   }
+   ```
+
+   Provide a manual fallback (this repo's Tool Call Console) that calls the
+   *same* `execute` functions, so the feature is testable in any browser
+   today, not just ones with WebMCP support.
+
+4. **Keep any hard-to-reverse action wired to a real user gesture, never to
+   a tool.** If an action would be bad to trigger accidentally or
+   maliciously (submitting a payment, deleting data, sending a message),
+   its only code path should be a `click`/`submit` event listener on a real
+   button — one that no tool function calls, references, or can synthesize.
+   Say so explicitly in that tool's `description`, so an agent reading it
+   knows to stop and ask a human rather than looking for a workaround.
+
+5. **Optional, but worth borrowing**: log every tool invocation somewhere
+   visible (see `instrumentedExecute()` in `js/app.js`) so a human — or a
+   developer debugging the integration — can see exactly what an agent did
+   and when, without opening DevTools.
+
+That's the entire pattern: a handful of small, honestly-described functions,
+registered behind a feature check, with one clear line an agent structurally
+cannot cross.
+
 
 ## Deployment
 

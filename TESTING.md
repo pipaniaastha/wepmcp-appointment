@@ -124,22 +124,56 @@ typing into the matching form control and blurring/changing it.
 | 5.5 | Reopen the row, click "Yes, clear everything." | All fields clear, status returns to `draft`, focus lands on "Full name." |
 | 5.6 | Complete a booking (§4.5), click "Book another appointment." | Form clears immediately (no confirmation needed — the prior booking is already saved), focus lands on "Full name," and the just-booked slot **stays** booked (verify via `describe_current_state`'s open-times line). |
 
-## 6. Accessibility checklist
-
-| # | Check | How |
-|---|---|---|
-| 6.1 | Full keyboard-only pass | Unplug your mouse (or just don't use it): Tab through the entire page — skip link first, then every field, both buttons, then into the tool console. Confirm nothing is skipped and nothing traps focus. |
-| 6.2 | Skip link | Load the page, press Tab once. A "Skip to main content" link should appear top-left and, on Enter, jump focus past the header. |
-| 6.3 | Visible focus indicator | Tab through the page; every focused control should have a clearly visible outline (never suppressed). |
-| 6.4 | Submitting incomplete form focuses the first error | §4.3 above. |
-| 6.5 | Focus never lands on `<body>` after a panel is hidden | Repeat §4.7, §5.5, §5.6, and confirming a booking (§4.5) while watching `document.activeElement` (DevTools: `document.activeElement.id`) — it should always be a real, visible control, never `BODY`. |
-| 6.6 | Screen reader spot check | With VoiceOver/NVDA/JAWS running: fill in an invalid email and tab away — the error should be announced immediately. Then successfully stage a review — the polite status line should announce it once, not the error text again. |
-| 6.7 | No blocking native dialogs anywhere | Confirm no `alert()`/`confirm()`/`prompt()` is used (search `js/app.js`) — the reset flow uses the inline confirmation row instead. |
-| 6.8 | Reduced-width / mobile layout | Resize the browser below ~880px wide — the two-column layout should collapse to one column with no horizontal scrolling. |
-
-## 7. Console / error hygiene
+## 6. Action log
 
 | # | Steps | Expected |
 |---|---|---|
-| 7.1 | Open DevTools console, reload the page. | No errors. If WebMCP isn't supported, the banner should say so (amber) without any console error — that's an expected, handled path, not a failure. |
-| 7.2 | Run every case above with the console open. | No uncaught errors at any point, including the intentionally-invalid inputs above (they should all fail *gracefully*, i.e. return `isError: true` / show an inline message — never throw). |
+| 6.1 | Load the page (form blank). | The Action log shows "No tool calls yet." |
+| 6.2 | Run `describe_current_state` from the console. | A new entry appears: timestamp, `describe_current_state({})`, and the ✓ result text. "No tool calls yet." is gone. |
+| 6.3 | Run `complete_form_field` with an invalid value (e.g. `{"field":"email","value":"bad"}`). | A new entry appears styled as an error (✗), showing the failure text. |
+| 6.4 | Click "Review my appointment" on the human path (not the console) with all required fields valid. | A `confirm_and_submit({})` entry appears in the log, exactly as if an agent had called the tool — confirming the button and the tool share one logged code path. |
+| 6.5 | Submit `{"field": "??", "value": "x"}` (not valid JSON, e.g. leave a trailing comma) into the console's Arguments box and click "Run tool." | An inline "Invalid JSON arguments" message appears near the console — **no** entry is added to the Action log, since no tool was actually invoked. |
+| 6.6 | Click "Clear log." | The log empties and "No tool calls yet." reappears. |
+| 6.7 | Make several calls in a row (mix of console and human-path actions). | Entries appear in chronological order, each with a distinct, increasing timestamp, and the log auto-scrolls to show the latest. |
+
+## 7. Targeted per-field edit from the review screen
+
+| # | Steps | Expected |
+|---|---|---|
+| 7.1 | Fill in a valid booking, stage it (§4.1), and locate the "Edit" link next to "Email" in the review panel. | The link is a real, keyboard-focusable `<button>` (reachable via Tab), not a plain link or a div with a click handler. |
+| 7.2 | Click "Edit" next to "Email." | Status returns to `draft`, the review panel hides, and keyboard focus lands directly in the Email field (not at the top of the form, not on "Review my appointment"). |
+| 7.3 | Change the email, then click "Review my appointment" again. | The review panel re-appears showing the updated email and all other fields unchanged. |
+| 7.4 | Repeat 7.1–7.3 for each of the other six rows (Name, Phone, Appointment type, Date, Time, Notes). | Each "Edit" link focuses its own field correctly, including the optional ones (Phone, Notes) even when they show "(not provided)"/"(none)". |
+| 7.5 | Clicking "Edit" on any field. | Confirm this does **not** create an Action log entry (it's a plain UI navigation, not a tool call — only actually setting a field value via `complete_form_field`/the field's own change event would log, and only if done through the console or an agent). |
+
+## 8. Simple / cognitive-load mode
+
+| # | Steps | Expected |
+|---|---|---|
+| 8.1 | Load the page fresh (no prior toggle in this browser), check the "Simple mode" button. | Shows "🔎 Simple mode: Off", `aria-pressed="false"`, right-hand tools panel visible, normal spacing. |
+| 8.2 | Click "Simple mode." | Button switches to "✅ Simple mode: On", `aria-pressed="true"`; the entire right-hand panel (tool list, Action log, Tool Call Console) disappears; the form column widens to fill the page; text and controls visibly enlarge; live-status announces the change. |
+| 8.3 | With Simple mode on, inspect the hint text under Full name, Phone, Preferred date, Preferred time, and Notes. | Each shows the shorter, plainer variant (e.g. "Pick a day below. Only open days are shown." instead of "Only weekdays with open slots are listed."). |
+| 8.4 | With Simple mode on, run `complete_form_field` with an invalid appointment type via the console (`{"field":"appointment_type","value":"nope"}`). | The inline field error shown **on the page** omits the "Call describe_current_state to see the valid options" clause (e.g. `"nope" isn't a recognized appointment type.`), but the **Action log entry** for that same call still shows the full, unedited tool response text including the clause — confirming the trim is display-only, never applied to what an agent reads. |
+| 8.5 | Click "Simple mode" again to turn it off, with that error still showing. | Tools panel reappears, spacing/type return to normal, hint text reverts to the original wording. The appointment-type error **re-derives from the field's actual stored value**, not from re-un-trimming the old message: since a rejected value is never written to state (only valid ones are), if the field is still genuinely empty it now shows "Please choose an appointment type." (`aria-invalid` stays `"true"`); if you'd set a valid value in between, the error clears entirely and `aria-invalid` becomes `"false"`. Either way, `aria-invalid` always matches whether the field is genuinely currently valid — confirm this by toggling mode a second time and checking the error/`aria-invalid` are unchanged (not flip-flopping). |
+| 8.6 | Reload the page after leaving Simple mode on. | The page loads with Simple mode already on (persisted via `localStorage`) — button shows "On" and the tools panel is hidden from the very first render, with no announcement (silent on load). |
+| 8.7 | Toggle back off, and confirm via keyboard only (Tab to the button, press Enter/Space). | Works identically to a mouse click — it's a real `<button>`. |
+
+## 9. Accessibility checklist
+
+| # | Check | How |
+|---|---|---|
+| 9.1 | Full keyboard-only pass | Unplug your mouse (or just don't use it): Tab through the entire page — skip link first, then every field, both buttons, then into the tool console. Confirm nothing is skipped and nothing traps focus. |
+| 9.2 | Skip link | Load the page, press Tab once. A "Skip to main content" link should appear top-left and, on Enter, jump focus past the header. |
+| 9.3 | Visible focus indicator | Tab through the page; every focused control should have a clearly visible outline (never suppressed). |
+| 9.4 | Submitting incomplete form focuses the first error | §4.3 above. |
+| 9.5 | Focus never lands on `<body>` after a panel is hidden | Repeat §4.7, §5.5, §5.6, §7.2, and confirming a booking (§4.5) while watching `document.activeElement` (DevTools: `document.activeElement.id`) — it should always be a real, visible control, never `BODY`. |
+| 9.6 | Screen reader spot check | With VoiceOver/NVDA/JAWS running: fill in an invalid email and tab away — the error should be announced immediately. Then successfully stage a review — the polite status line should announce it once, not the error text again. Also confirm a new Action log entry is announced without the whole log being re-read. |
+| 9.7 | No blocking native dialogs anywhere | Confirm no `alert()`/`confirm()`/`prompt()` is used (search `js/app.js`) — the reset flow uses the inline confirmation row instead. |
+| 9.8 | Reduced-width / mobile layout | Resize the browser below ~880px wide — the two-column layout should collapse to one column with no horizontal scrolling (with or without Simple mode). |
+
+## 10. Console / error hygiene
+
+| # | Steps | Expected |
+|---|---|---|
+| 10.1 | Open DevTools console, reload the page. | No errors. If WebMCP isn't supported, the banner should say so (amber) without any console error — that's an expected, handled path, not a failure. |
+| 10.2 | Run every case above with the console open. | No uncaught errors at any point, including the intentionally-invalid inputs above (they should all fail *gracefully*, i.e. return `isError: true` / show an inline message — never throw). Any thrown error inside a tool is caught by `instrumentedExecute` and surfaced as a normal `isError: true` result, logged like any other call. |
