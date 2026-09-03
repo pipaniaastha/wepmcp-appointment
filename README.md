@@ -16,6 +16,7 @@ Source: **[github.com/pipaniaastha/wepmcp-appointment](https://github.com/pipani
 - [The four tools](#the-four-tools)
 - [Why `confirm_and_submit` can't finalize the booking](#why-confirm_and_submit-cant-finalize-the-booking)
 - [Beyond the four tools](#beyond-the-four-tools)
+- [Voice mapping and switch-access compatibility](#voice-mapping-and-switch-access-compatibility)
 - [Project structure](#project-structure)
 - [Accessibility](#accessibility)
 - [Running it locally](#running-it-locally)
@@ -200,6 +201,125 @@ The preference is remembered per-browser via `localStorage` (falling back
 silently to "off" if storage is unavailable, e.g. in a locked-down private
 browsing mode) and is fully reversible with one click.
 
+## Voice mapping and switch-access compatibility
+
+> **Verification status, stated plainly:** everything below is **implemented
+> to spec and works in a standards-compliant browser**, and every piece of
+> it that *can* be verified without specialized hardware has been — live, in
+> a real browser, not just written and assumed correct (see each
+> subsection). What has **not** been verified is the literal hardware:
+> speaking into a real microphone and getting a transcript back from a real
+> speech engine, and operating the page with a real physical switch,
+> sip-and-puff controller, or other dedicated switch-access device. Don't
+> read "tested" anywhere below as a claim about that hardware — it isn't
+> one. This distinction is called out again, in code, at the top of
+> `js/voice.js` and above the scan-mode code in `js/app.js`.
+
+### Voice mapping
+
+Every field has a 🎤 button next to it. Clicking it starts the browser's
+[Web Speech API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Speech_API)
+`SpeechRecognition`, listens for one utterance, and routes the resulting
+transcript through **the exact same `applyFieldValue()` function** that
+`complete_form_field` (the tool) and typing (manual input) both call —
+there is no separate, less-validated path for voice. A spoken value is
+validated identically to a typed one: a spoken appointment type that isn't
+in the list produces the same rejection a typo would.
+
+- **Free-text fields** (Name, Phone, Notes) take the transcript directly.
+  **Email** gets one small, literal transform first
+  (`Voice.normalizeSpokenEmail` in `js/voice.js`): spoken "at" → `@` and
+  "dot" → `.`, so saying "jordan dot rivera at example dot com" produces
+  `jordan.rivera@example.com`.
+- **Dropdown-backed fields** (Appointment type, Date, Time) are matched
+  against the currently valid options' labels (`Voice.matchSpokenOption`),
+  so saying "Dental Cleaning" or "Monday, September 7, 2026" resolves to
+  the right underlying value. An ambiguous or unrecognized phrase never
+  guesses — it returns no match, and the page asks you to try again or
+  pick manually rather than silently choosing the wrong option.
+- If the browser doesn't expose `SpeechRecognition` /
+  `webkitSpeechRecognition` at all, every mic button is disabled with an
+  explanatory `title`, and a note near the top of the form says so — no
+  broken controls.
+
+**What's automated-tested:** `js/voice.js` (the matching and email
+normalization logic) is a pure module with no DOM or SpeechRecognition
+access — the same pattern as `data.js`/`validation.js` — and is covered by
+`tests/voice.test.js` (15 cases: exact/partial/ambiguous matching,
+punctuation tolerance, multi-word email normalization, humanized
+date/time-label matching, empty-input edge cases). Run it with `npm test`.
+
+**What was verified live, but not with real audio hardware:** the full
+pipeline from a mic-button click through to a filled, validated field was
+exercised in a real Chrome session by patching `SpeechRecognition`'s
+`start`/`abort` prototype methods to synchronously deliver a canned
+transcript instead of opening the microphone — deliberately avoiding
+triggering a real OS microphone-permission prompt, since this repo's
+development environment has no microphone and no way to grant that
+permission interactively. This confirmed, with the *real* browser
+constructor and *real* app code (only the audio capture step was
+substituted): free-text fields, spoken-email normalization, dropdown
+matching (including a no-match producing the "didn't recognize" message
+rather than a guess), the mutual-exclusion of mic buttons while one is
+listening, cancel-by-clicking-again, and the correct interaction with
+existing validation (e.g. speaking a time before a date is chosen produces
+the real "Choose a date before a time" message). What this method
+*cannot* prove is whether a real speech engine, given real human speech,
+produces transcripts shaped the way these tests assume — that's the part
+that needs a microphone and a person to actually confirm.
+
+### Switch-access compatibility (scan mode)
+
+Two things support switch access:
+
+1. **Every interactive element is reachable via sequential Tab order with a
+   visible focus indicator** — true throughout this project because every
+   control is a native `<input>`, `<select>`, `<textarea>`, or `<button>`
+   (see [Accessibility](#accessibility)), and `:focus-visible` outlines are
+   never suppressed. This was re-verified after adding voice buttons, the
+   Simple-mode toggle, and the scan-mode controls, by tabbing through the
+   entire page in order and confirming nothing is skipped and nothing traps
+   focus (see `TESTING.md`).
+2. **A "Scan mode" toggle** (next to Simple mode, with an adjustable 1–5
+   second interval) implements the standard single-switch **auto-scan**
+   pattern used throughout switch-access software: while it's on, keyboard
+   focus automatically advances through every currently visible, enabled
+   control on a timer, wrapping around at the end. A user with a single
+   switch watches focus move and activates their switch (which their
+   switch-access software maps to a real key, conventionally Enter or
+   Space) when the control they want is focused — activation relies
+   entirely on **native browser semantics** (Enter/Space already activates
+   a focused button; a focused text field is already ready to type into),
+   so there's no custom "select" mechanism to get wrong. Scanning
+   automatically pauses whenever focus lands in a free-text field (so
+   there's unlimited time to type once you've scanned your way there), and
+   <kbd>Escape</kbd> — or clicking the toggle again — stops it immediately.
+
+**What was verified live:** the entire on-page mechanism, in a real
+browser, using real timers and real keyboard events — not just written and
+assumed correct. This included: the scan list correctly excludes hidden
+elements (e.g. the developer tools panel while Simple mode hides it) and
+correctly includes newly-revealed ones (e.g. the "Start over" confirmation
+row's buttons only once that row is visible); focus genuinely pauses on a
+text field across multiple real timer ticks and resumes advancing once
+focus moves off it; <kbd>Escape</kbd> stops the timer for real (confirmed
+by waiting afterward and checking focus no longer moves); and changing the
+interval takes effect immediately. One real finding from this testing: in
+a browser tab that isn't the OS-focused window (true of an automated
+testing session), Chrome throttles `setInterval` timers below the
+requested rate as a power-saving measure — the tick still landed on
+exactly the correct next element when it fired, just at a slower real-world
+cadence than requested. That's expected browser behavior for any
+background tab, not a bug, but it's worth knowing if you test this with
+the window unfocused.
+
+**What was not verified:** a real switch-access device (a physical switch,
+sip-and-puff controller, eye-gaze system operating in switch mode, etc.).
+This implementation follows the documented pattern such hardware expects
+(auto-scan + native focus/activation semantics), but "follows the
+documented pattern" and "confirmed to work with a specific real device" are
+different claims, and only the first one is made here.
+
 ## Project structure
 
 ```
@@ -214,12 +334,16 @@ webmcp-appointment/
 │   ├── validation.js         Pure field-validation logic. Same module,
 │   │                        same reason: testable head-on in Node without a
 │   │                        browser.
+│   ├── voice.js              Pure transcript-matching/normalization logic
+│   │                        for voice input. Same pattern, same reason.
 │   └── app.js               State, DOM wiring, the four WebMCP tool
 │                            implementations + registration, the Action log,
-│                            the Tool Call Console, and Simple mode.
+│                            the Tool Call Console, Simple mode, voice
+│                            input, and scan mode.
 ├── tests/
-│   └── validation.test.js   node:test unit tests for js/data.js and
-│                            js/validation.js (36 cases).
+│   ├── validation.test.js   node:test unit tests for js/data.js and
+│   │                        js/validation.js (36 cases).
+│   └── voice.test.js         node:test unit tests for js/voice.js (15 cases).
 ├── scripts/
 │   └── serve.js              Zero-dependency static file server for local dev.
 ├── TESTING.md               Manual end-to-end test plan (tools + UI + a11y).
@@ -227,11 +351,11 @@ webmcp-appointment/
 └── .gitignore
 ```
 
-`data.js` and `validation.js` use a small UMD-style wrapper (`if (typeof
-module !== "undefined") { module.exports = ... } else { global.X = ... }`) so
-the *identical* file is loaded by `<script>` tags in the browser and by
-`require()` in the Node test suite — there's exactly one copy of the
-validation logic, not a browser copy and a "mirrored for tests" copy that
+`data.js`, `validation.js`, and `voice.js` all use a small UMD-style wrapper
+(`if (typeof module !== "undefined") { module.exports = ... } else { global.X
+= ... }`) so the *identical* file is loaded by `<script>` tags in the browser
+and by `require()` in the Node test suite — there's exactly one copy of each
+piece of logic, not a browser copy and a "mirrored for tests" copy that
 could drift apart.
 
 `app.js` intentionally stays as a plain `<script>` (not an ES module) so the
@@ -294,6 +418,13 @@ implemented deliberately, not left as an afterthought:
   with focus defaulting to "Cancel" rather than the destructive option.
 - **Visible focus indicators**: `:focus-visible` outlines are never
   suppressed.
+- **Voice input and Scan mode are additive, not a parallel UI**: every mic
+  button and both new toggles are native `<button>`/`<select>` elements in
+  the normal Tab order, so they need no special-casing to remain keyboard-
+  and switch-accessible themselves. See
+  ["Voice mapping and switch-access compatibility"](#voice-mapping-and-switch-access-compatibility)
+  for what's verified there and what explicitly isn't (real audio/switch
+  hardware).
 
 This was verified by actually driving the page — filling fields, submitting
 incomplete/complete forms, staging and confirming a booking, cancelling and
@@ -322,19 +453,23 @@ server (uses only Node's built-in `http`/`fs` modules) — nothing to
 
 ## Testing
 
-**Automated:** `js/data.js` and `js/validation.js` are pure functions (no DOM
-access), so every validation branch and every date/slot-availability helper
-is covered by a Node test suite:
+**Automated:** `js/data.js`, `js/validation.js`, and `js/voice.js` are pure
+functions (no DOM access), so every validation branch, every
+date/slot-availability helper, and the voice-transcript matching logic is
+covered by a Node test suite:
 
 ```bash
 npm test
 ```
 
-This runs 36 cases via the built-in `node:test` runner (Node ≥ 18, no test
+This runs 51 cases via the built-in `node:test` runner (Node ≥ 18, no test
 framework dependency) covering: every required/optional field's valid and
 invalid paths, the booked-slot conflict check, the "must pick a date before a
-time" ordering rule, unknown-field/unknown-option handling, and the
-date-generation and open-slot helpers in `data.js`.
+time" ordering rule, unknown-field/unknown-option handling, the
+date-generation and open-slot helpers in `data.js`, and spoken-transcript
+matching/normalization in `voice.js` (see
+["Voice mapping"](#voice-mapping-and-switch-access-compatibility) for what
+this suite does and doesn't prove).
 
 **Manual:** the DOM wiring, the four tools' `execute` functions, the review
 → confirm flow, focus management, and live-region announcements are best

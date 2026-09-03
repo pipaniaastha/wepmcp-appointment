@@ -1,9 +1,22 @@
 # Manual test plan
 
-This complements the automated suite (`npm test`, `tests/validation.test.js`,
-36 cases covering `js/validation.js` and `js/data.js` in isolation). Those
+This complements the automated suite (`npm test`, 51 cases across
+`tests/validation.test.js` and `tests/voice.test.js`, covering
+`js/validation.js`, `js/data.js`, and `js/voice.js` in isolation). Those
 tests don't touch the DOM; everything below does — the tool `execute`
 functions, the real form, focus management, and live-region behavior.
+
+**A note on §9–10 (voice input and scan mode):** these two features are
+implemented to spec but have not been verified with real assistive
+hardware (a microphone + real speech, or a physical switch-access device).
+§9's steps use a documented technique — patching `SpeechRecognition`'s
+prototype methods — to exercise the real code path without opening a real
+microphone or triggering an OS permission prompt (this environment has no
+microphone). §10's steps use real timers and real keyboard events, which
+*is* a full, genuine test of the on-page mechanism — what's unverified
+there is specifically the physical switch device, not the code. See
+README.md's "Voice mapping and switch-access compatibility" section for
+the full disclosure.
 
 Setup: `npm start`, open `http://localhost:5500/index.html`. Reload between
 sections to reset state, or use the "Start over" button.
@@ -158,22 +171,66 @@ typing into the matching form control and blurring/changing it.
 | 8.6 | Reload the page after leaving Simple mode on. | The page loads with Simple mode already on (persisted via `localStorage`) — button shows "On" and the tools panel is hidden from the very first render, with no announcement (silent on load). |
 | 8.7 | Toggle back off, and confirm via keyboard only (Tab to the button, press Enter/Space). | Works identically to a mouse click — it's a real `<button>`. |
 
-## 9. Accessibility checklist
+## 9. Voice mapping (implemented to spec — see the note at the top of this file)
 
-| # | Check | How |
-|---|---|---|
-| 9.1 | Full keyboard-only pass | Unplug your mouse (or just don't use it): Tab through the entire page — skip link first, then every field, both buttons, then into the tool console. Confirm nothing is skipped and nothing traps focus. |
-| 9.2 | Skip link | Load the page, press Tab once. A "Skip to main content" link should appear top-left and, on Enter, jump focus past the header. |
-| 9.3 | Visible focus indicator | Tab through the page; every focused control should have a clearly visible outline (never suppressed). |
-| 9.4 | Submitting incomplete form focuses the first error | §4.3 above. |
-| 9.5 | Focus never lands on `<body>` after a panel is hidden | Repeat §4.7, §5.5, §5.6, §7.2, and confirming a booking (§4.5) while watching `document.activeElement` (DevTools: `document.activeElement.id`) — it should always be a real, visible control, never `BODY`. |
-| 9.6 | Screen reader spot check | With VoiceOver/NVDA/JAWS running: fill in an invalid email and tab away — the error should be announced immediately. Then successfully stage a review — the polite status line should announce it once, not the error text again. Also confirm a new Action log entry is announced without the whole log being re-read. |
-| 9.7 | No blocking native dialogs anywhere | Confirm no `alert()`/`confirm()`/`prompt()` is used (search `js/app.js`) — the reset flow uses the inline confirmation row instead. |
-| 9.8 | Reduced-width / mobile layout | Resize the browser below ~880px wide — the two-column layout should collapse to one column with no horizontal scrolling (with or without Simple mode). |
-
-## 10. Console / error hygiene
+Section 9.1–9.2 need only a browser with `SpeechRecognition` support (check
+`"SpeechRecognition" in window || "webkitSpeechRecognition" in window` in
+DevTools). Section 9.3 needs the prototype-patch technique below, which
+avoids opening a real microphone or triggering an OS permission prompt —
+useful in any environment without a mic, and the technique this project's
+own testing used.
 
 | # | Steps | Expected |
 |---|---|---|
-| 10.1 | Open DevTools console, reload the page. | No errors. If WebMCP isn't supported, the banner should say so (amber) without any console error — that's an expected, handled path, not a failure. |
-| 10.2 | Run every case above with the console open. | No uncaught errors at any point, including the intentionally-invalid inputs above (they should all fail *gracefully*, i.e. return `isError: true` / show an inline message — never throw). Any thrown error inside a tool is caught by `instrumentedExecute` and surfaced as a normal `isError: true` result, logged like any other call. |
+| 9.1 | Load the page in a browser with no `SpeechRecognition` support (or check the logic by reading `js/app.js`'s `voiceSupported` check). | Every 🎤 button is `disabled` with `title="Voice input isn't supported in this browser."`, and the note under the status line says voice input isn't available. |
+| 9.2 | Load the page in a browser that has `SpeechRecognition` support. | Every 🎤 button is enabled with `title="Speak this field's value"`, and the note says voice input is available. **Do not click one without a real microphone available** — it will prompt for microphone permission. |
+| 9.3 | In DevTools, patch the recognition constructor before testing (paste into the console): `var C = window.SpeechRecognition \|\| window.webkitSpeechRecognition; C.prototype.start = function(){ var s=this; setTimeout(function(){ if(s.onresult) s.onresult({results:[[{transcript: window.__t}]]}); if(s.onend) s.onend(); }, 50); }; C.prototype.abort = function(){ if(this.onend) this.onend(); };` then for each case below, set `window.__t = "<transcript>"` and click the field's mic button. | Sets up safe, hardware-free testing of the real code path (see README's verification-status note for why this is a legitimate substitute for the audio-capture step only, not a substitute for real hardware testing). |
+| 9.4 | `window.__t = "Jordan Rivera"`, click Full name's mic. | Full name field fills with "Jordan Rivera"; live-status: `Heard "Jordan Rivera" for Full name.` |
+| 9.5 | `window.__t = "jordan dot rivera at example dot com"`, click Email's mic. | Email field fills with `jordan.rivera@example.com` (spoken "dot"/"at" converted). |
+| 9.6 | `window.__t = "<the exact label text of any appointment type option>"`, click Appointment type's mic. | That option is selected. |
+| 9.7 | `window.__t = "underwater basket weaving"`, click Appointment type's mic. | Field is **not** changed; live-status: `Didn't recognize "underwater basket weaving" as an appointment type. Try saying it as shown in the dropdown, or select it manually.` (note "an," not "a" — grammar bug found and fixed during development). |
+| 9.8 | With no date chosen, `window.__t = "9:00 AM"`, click Preferred time's mic. | Live-status shows the real validation message `Preferred time: Choose a date before a time.` — not a "didn't understand" message (an earlier version of this feature showed the wrong, more confusing message here; fixed during development — see §9.9 for the regression check). |
+| 9.9 | Choose a date first, then repeat 9.8 with the label text of an actually-open time slot. | That time is selected; live-status: `Heard "<label>" — set Preferred time.` |
+| 9.10 | Click a mic button to start listening, then click it again before it finishes. | Listening stops immediately (recognition aborted); the field is unchanged; the button's `listening` class and `aria-pressed` clear. |
+| 9.11 | Click one field's mic button, then try clicking a different field's mic button while the first is still listening. | The second button is disabled and unclickable until the first finishes or is cancelled — only one recognition session at a time. |
+| 9.12 | Complete all seven fields via voice (9.4–9.9 shape), then run `describe_current_state`. | Every field shows the correct, fully-validated value — a voice-only booking reaches the same valid state a typed one would. |
+
+## 10. Switch-access: scan mode (implemented to spec — see the note at the top of this file)
+
+Every step below is a genuine, hardware-free test of the real on-page
+mechanism (real timers, real keyboard events) — nothing here is mocked.
+What it cannot test is a physical switch device itself.
+
+| # | Steps | Expected |
+|---|---|---|
+| 10.1 | Load the page, locate "Scan mode" next to "Simple mode." | Shows "🔁 Scan mode: Off", `aria-pressed="false"`. A "Scan speed" `<select>` next to it defaults to 1.5 seconds. |
+| 10.2 | Set the scan speed to 1 second, click "Scan mode." | Button switches to "⏹️ Scan mode: On", `aria-pressed="true"`; live-status announces `Scan mode on. Focus will move automatically every 1 second. Press Escape or the button again to stop.` (singular "second," not "1 seconds" — grammar bug found and fixed during development). |
+| 10.3 | Focus a button (not a text field), then wait a couple of seconds (more if the browser tab isn't focused — see the throttling note below). | Focus visibly moves to the next reachable control in DOM order, then the next, wrapping around at the end back to the first. |
+| 10.4 | Manually Tab (or click) into a text field (Full name, Email, Phone, or Notes) while scan mode is on, then wait several seconds. | Focus **stays** in that field — scanning self-pauses so you have unlimited time to type. |
+| 10.5 | Tab or click out of that text field to any other control. | Scanning resumes advancing from wherever focus now is. |
+| 10.6 | While scanning, press <kbd>Escape</kbd>. | Scanning stops immediately: button reverts to "Scan mode: Off," `aria-pressed="false"`, live-status announces it, and focus stops moving (confirm by waiting afterward — it should not jump again). |
+| 10.7 | Turn Simple mode on while Scan mode is also on. | The scan list immediately stops including anything inside the now-hidden tools panel — focus only ever lands on genuinely visible controls. |
+| 10.8 | Click "Start over" while scan mode is on (revealing the confirm row), and keep watching. | Scanning reaches "Yes, clear everything" and "Cancel" once that row is visible — the scan list is recomputed live, not built once at page load. |
+| 10.9 | Change the scan-speed dropdown while scanning is already on. | The new interval takes effect immediately (no need to toggle off and on again). |
+| 10.10 | Full keyboard-only pass, including the new controls. | Tab through the entire page — skip link, mode-bar toggles, scan-speed select, every field plus its mic button, form actions, and the tools panel — confirm every mic button, "Scan mode," and the scan-speed select are all individually reachable and operable via keyboard alone. |
+| 10.11 | **Timer throttling note** | If the browser window/tab isn't the OS-focused one (common when testing via automation), Chrome throttles `setInterval` below the requested rate as a power-saving measure — scanning will still advance to the *correct* next element, just more slowly than the selected interval. This is expected browser behavior, not a bug; for accurate timing, keep the tab focused and visible. |
+
+## 11. Accessibility checklist
+
+| # | Check | How |
+|---|---|---|
+| 11.1 | Full keyboard-only pass | Unplug your mouse (or just don't use it): Tab through the entire page — skip link first, then every field (and its mic button), the mode-bar and access-bar controls, then into the tool console. Confirm nothing is skipped and nothing traps focus. |
+| 11.2 | Skip link | Load the page, press Tab once. A "Skip to main content" link should appear top-left and, on Enter, jump focus past the header. |
+| 11.3 | Visible focus indicator | Tab through the page; every focused control should have a clearly visible outline (never suppressed). |
+| 11.4 | Submitting incomplete form focuses the first error | §4.3 above. |
+| 11.5 | Focus never lands on `<body>` after a panel is hidden | Repeat §4.7, §5.5, §5.6, §7.2, and confirming a booking (§4.5) while watching `document.activeElement` (DevTools: `document.activeElement.id`) — it should always be a real, visible control, never `BODY`. |
+| 11.6 | Screen reader spot check | With VoiceOver/NVDA/JAWS running: fill in an invalid email and tab away — the error should be announced immediately. Then successfully stage a review — the polite status line should announce it once, not the error text again. Also confirm a new Action log entry is announced without the whole log being re-read. |
+| 11.7 | No blocking native dialogs anywhere | Confirm no `alert()`/`confirm()`/`prompt()` is used (search `js/app.js`) — the reset flow uses the inline confirmation row instead, and voice/scan errors go through the same `announce()`/`role="alert"` mechanisms as everything else. |
+| 11.8 | Reduced-width / mobile layout | Resize the browser below ~880px wide — the two-column layout should collapse to one column with no horizontal scrolling (with or without Simple mode). |
+
+## 12. Console / error hygiene
+
+| # | Steps | Expected |
+|---|---|---|
+| 12.1 | Open DevTools console, reload the page. | No errors. If WebMCP isn't supported, the banner should say so (amber) without any console error — that's an expected, handled path, not a failure. |
+| 12.2 | Run every case above with the console open. | No uncaught errors at any point, including the intentionally-invalid inputs above (they should all fail *gracefully*, i.e. return `isError: true` / show an inline message — never throw). Any thrown error inside a tool is caught by `instrumentedExecute` and surfaced as a normal `isError: true` result, logged like any other call. |

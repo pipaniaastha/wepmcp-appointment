@@ -643,6 +643,240 @@
 
   applyModeUI(simpleMode); // apply any persisted preference silently, no announce
 
+  // ---------- Voice input: speak a field's value instead of typing ----------
+  // Every recognized value is routed through applyFieldValue() — the exact
+  // same function complete_form_field (the tool) and typing (manual input)
+  // both call. There is no separate, less-validated path for voice: a
+  // spoken value is validated identically to a typed one.
+  //
+  // VERIFICATION NOTE (implemented-to-spec, not hardware-verified): the
+  // transcript-matching/normalization logic in js/voice.js is covered by
+  // an automated Node test suite (tests/voice.test.js) using canned
+  // transcript strings. The SpeechRecognition capture below — actually
+  // listening to a real microphone and getting a transcript back from the
+  // browser's speech engine — is implemented to the Web Speech API spec
+  // and was exercised here only via feature-detection and by simulating
+  // recognition results programmatically; it has NOT been tested with a
+  // real microphone/speaker or any assistive/switch-access hardware. See
+  // README.md's "Voice mapping" section for the full disclosure.
+  var SpeechRecognitionCtor = (typeof window !== "undefined") && (window.SpeechRecognition || window.webkitSpeechRecognition);
+  var voiceSupported = !!SpeechRecognitionCtor;
+  var activeRecognition = null;
+  var voiceSupportNote = document.getElementById("voice-support-note");
+
+  if (voiceSupportNote) {
+    var supportedText = "🎤 Voice input available — click the microphone icon next to a field to speak its value.";
+    var unsupportedText = "🎤 Voice input isn't available in this browser (needs SpeechRecognition support, e.g. Chrome or Edge).";
+    voiceSupportNote.dataset.defaultText = voiceSupported ? supportedText : unsupportedText;
+    voiceSupportNote.textContent = simpleMode ? voiceSupportNote.dataset.simpleText : voiceSupportNote.dataset.defaultText;
+  }
+
+  // Builds the {value,label} option list a spoken value for `field` should
+  // be matched against. Returns null for free-text fields (full_name,
+  // email, phone, notes), which take the transcript directly instead.
+  function optionsForField(field) {
+    if (field === "appointment_type") return APPOINTMENT_TYPES;
+    if (field === "date") return AVAILABLE_DATES.map(function (iso) { return { value: iso, label: humanDate(iso) }; });
+    if (field === "time") return openTimesFor(state.fields.date, BOOKED_SLOTS).map(function (t) { return { value: t, label: TIME_LABELS[t] }; });
+    return null;
+  }
+
+  function setVoiceButtonListening(field, listening) {
+    FIELD_ORDER.forEach(function (f) {
+      var btn = document.getElementById(f + "-voice-btn");
+      if (!btn) return;
+      if (f === field) {
+        btn.classList.toggle("listening", listening);
+        btn.setAttribute("aria-pressed", listening ? "true" : "false");
+        btn.title = listening ? "Listening… click to stop" : "Speak this field's value";
+      } else {
+        btn.disabled = listening; // only one recognition session at a time
+      }
+    });
+  }
+
+  function handleVoiceResult(field, transcript) {
+    var label = fieldLabel(field);
+
+    // Note: optionsForField("time") deliberately still returns every time
+    // slot (via openTimesFor with an empty date) when no date is chosen
+    // yet, rather than an empty list — so a spoken time like "9:00 AM"
+    // still matches to "09:00" here, and applyFieldValue's own validation
+    // naturally surfaces "Choose a date before a time." No special-casing
+    // needed; letting the real validation message do its job (rather than
+    // trying to pre-empt it with a "didn't understand" message) turned out
+    // to be the more correct behavior — confirmed by testing this exact
+    // scenario live, where an earlier special-cased version produced a
+    // more confusing message than this simpler code does.
+    var opts = optionsForField(field);
+    if (opts) {
+      var matched = Voice.matchSpokenOption(opts, transcript);
+      if (matched === null) {
+        var article = /^[aeiou]/i.test(label) ? "an" : "a";
+        announce("Didn't recognize \"" + transcript + "\" as " + article + " " + label.toLowerCase() + ". Try saying it as shown in the dropdown, or select it manually.");
+        return;
+      }
+      var result = applyFieldValue(field, matched);
+      announce(result.ok ? "Heard \"" + transcript + "\" — set " + label + "." : label + ": " + result.error);
+      return;
+    }
+
+    var value = field === "email" ? Voice.normalizeSpokenEmail(transcript) : String(transcript).trim();
+    var result2 = applyFieldValue(field, value);
+    announce(result2.ok ? "Heard \"" + transcript + "\" for " + label + "." : label + ": " + result2.error);
+  }
+
+  function startVoiceInput(field) {
+    if (!voiceSupported) return;
+    if (activeRecognition) {
+      activeRecognition.abort(); // clicking the active mic button again cancels
+      return;
+    }
+
+    var recognition = new SpeechRecognitionCtor();
+    recognition.lang = "en-US";
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    activeRecognition = recognition;
+    setVoiceButtonListening(field, true);
+    announce("Listening for " + fieldLabel(field) + "…");
+
+    recognition.onresult = function (event) {
+      var transcript = event.results[0][0].transcript;
+      handleVoiceResult(field, transcript);
+    };
+    recognition.onerror = function (event) {
+      if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+        announce("Microphone access was denied, so voice input can't be used.");
+      } else if (event.error === "no-speech") {
+        announce("Didn't hear anything for " + fieldLabel(field) + ". Try again.");
+      } else if (event.error !== "aborted") {
+        announce("Voice input error (" + event.error + "). Try again or type the value instead.");
+      }
+    };
+    recognition.onend = function () {
+      setVoiceButtonListening(field, false);
+      activeRecognition = null;
+    };
+
+    try {
+      recognition.start();
+    } catch (e) {
+      announce("Couldn't start voice input: " + e.message);
+      setVoiceButtonListening(field, false);
+      activeRecognition = null;
+    }
+  }
+
+  FIELD_ORDER.forEach(function (field) {
+    var btn = document.getElementById(field + "-voice-btn");
+    if (!btn) return;
+    if (!voiceSupported) {
+      btn.disabled = true;
+      btn.title = "Voice input isn't supported in this browser.";
+      return;
+    }
+    btn.addEventListener("click", function () { startVoiceInput(field); });
+  });
+
+  // ---------- Switch-access: scan mode ----------
+  // Implements the standard single-switch auto-scan pattern: keyboard focus
+  // advances automatically through every currently reachable control at a
+  // fixed, adjustable interval. Activating whatever is focused relies
+  // entirely on native browser semantics (Enter/Space activates a focused
+  // button; typing works normally in a focused text field) — there is no
+  // separate "select" action to build, which mirrors how real switch-access
+  // software integrates with ordinary web content (it sends a synthetic
+  // keypress to whatever the OS/browser currently has focused). Scanning
+  // self-pauses whenever focus lands in a free-text field, since a user
+  // needs unlimited time to type once they've scanned their way there.
+  //
+  // VERIFICATION NOTE (implemented-to-spec, not hardware-verified): every
+  // behavior described above (focus order, wraparound, pause-on-text-entry,
+  // Escape-to-stop, interval changes) was exercised here by simulating
+  // keyboard/focus events programmatically in a real browser session — see
+  // TESTING.md. This has NOT been tested with a real switch-access device
+  // (a physical switch, sip-and-puff controller, eye-tracker acting as a
+  // switch, etc.); only the on-page scanning mechanics are verified.
+  var scanModeToggle = document.getElementById("scan-mode-toggle");
+  var scanIntervalSelect = document.getElementById("scan-interval");
+  var scanIntervalId = null;
+  var scanModeOn = false;
+
+  var SCAN_SELECTOR = 'a[href], button:not(:disabled), input:not(:disabled):not([type="hidden"]), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
+
+  function isElementVisible(el) {
+    return !!(el.offsetWidth || el.offsetHeight || (el.getClientRects && el.getClientRects().length)) && el.offsetParent !== null;
+  }
+
+  function scannableElements() {
+    return Array.prototype.filter.call(document.querySelectorAll(SCAN_SELECTOR), isElementVisible);
+  }
+
+  function isTextEntryElement(el) {
+    if (!el) return false;
+    if (el.tagName === "TEXTAREA") return true;
+    if (el.tagName === "INPUT") return ["text", "email", "tel"].indexOf(el.type) !== -1;
+    return false;
+  }
+
+  function scanTick() {
+    if (isTextEntryElement(document.activeElement)) return; // let the user keep typing
+    var list = scannableElements();
+    if (!list.length) return;
+    var currentIndex = list.indexOf(document.activeElement);
+    var nextIndex = (currentIndex + 1) % list.length;
+    list[nextIndex].focus();
+  }
+
+  function stopScanningTimer() {
+    if (scanIntervalId) {
+      clearInterval(scanIntervalId);
+      scanIntervalId = null;
+    }
+  }
+
+  function startScanningTimer() {
+    stopScanningTimer();
+    var ms = Number(scanIntervalSelect.value) || 1500;
+    scanIntervalId = setInterval(scanTick, ms);
+  }
+
+  function setScanMode(on) {
+    scanModeOn = on;
+    scanModeToggle.setAttribute("aria-pressed", on ? "true" : "false");
+    scanModeToggle.innerHTML = "";
+    var icon = document.createElement("span");
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = on ? "⏹️" : "🔁";
+    scanModeToggle.appendChild(icon);
+    scanModeToggle.appendChild(document.createTextNode(" Scan mode: " + (on ? "On" : "Off")));
+
+    if (on) {
+      startScanningTimer();
+      var seconds = Number(scanIntervalSelect.value) / 1000;
+      var unit = seconds === 1 ? "second" : "seconds";
+      announce("Scan mode on. Focus will move automatically every " + seconds + " " + unit + ". Press Escape or the button again to stop.");
+    } else {
+      stopScanningTimer();
+      announce("Scan mode off.");
+    }
+  }
+
+  scanModeToggle.addEventListener("click", function () {
+    setScanMode(!scanModeOn);
+  });
+  scanIntervalSelect.addEventListener("change", function () {
+    if (scanModeOn) startScanningTimer(); // apply the new speed immediately
+  });
+  document.addEventListener("keydown", function (e) {
+    if (scanModeOn && e.key === "Escape") {
+      setScanMode(false);
+    }
+  });
+
   // Initial announce
   announce("Page ready. " + FIELD_ORDER.length + " fields to complete, " + REQUIRED_FIELDS.length + " required.");
 })();

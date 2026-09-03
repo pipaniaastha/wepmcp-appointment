@@ -343,6 +343,58 @@ button.danger.filled {
 }
 #mode-bar .hint { margin: 0; }
 
+/* ---------- Switch-access bar (scan mode) ---------- */
+#access-bar {
+  max-width: 1100px;
+  margin: 0.6rem auto 0;
+  padding: 0 1.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+#access-bar label { font-size: 0.85rem; font-weight: 600; margin: 0; }
+#access-bar select { font-size: 0.85rem; padding: 0.25rem 0.4rem; }
+#scan-mode-toggle {
+  background: #fff;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 999px;
+  padding: 0.4rem 0.9rem;
+  font-weight: 700;
+  font-size: 0.85rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+#scan-mode-toggle[aria-pressed="true"] {
+  background: var(--warn-ink);
+  border-color: var(--warn-ink);
+  color: #fff;
+}
+#access-bar .hint { margin: 0; flex-basis: 100%; }
+
+/* ---------- Voice input ---------- */
+.field-input-row { display: flex; gap: 0.4rem; align-items: stretch; }
+.field-input-row input,
+.field-input-row select,
+.field-input-row textarea { flex: 1 1 auto; min-width: 0; }
+.voice-btn {
+  flex: 0 0 auto;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0 0.7rem;
+  font-size: 1.15rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.voice-btn:hover:not(:disabled) { border-color: var(--accent); }
+.voice-btn.listening {
+  background: var(--err-ink);
+  border-color: var(--err-ink);
+}
+.voice-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
 /* ---------- Simple / cognitive-load mode ---------- */
 body.simple-mode { font-size: 1.1rem; }
 body.simple-mode main { grid-template-columns: 1fr; max-width: 760px; }
@@ -359,6 +411,7 @@ body.simple-mode textarea {
   padding: 0.85rem 0.75rem;
   font-size: 1.1rem;
 }
+body.simple-mode .voice-btn { font-size: 1.35rem; padding: 0 0.9rem; }
 body.simple-mode button.secondary,
 body.simple-mode button.danger,
 body.simple-mode #confirm-btn,
