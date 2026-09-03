@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Riverside Clinic — Book an Appointment (WebMCP demo)</title>
+<link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+<a href="#main-content" class="skip-link">Skip to main content</a>
+
+<header class="site">
+  <h1>Riverside Family Clinic</h1>
+  <p>Book an appointment — this page exposes real WebMCP tools so an AI agent can complete this task for you.</p>
+</header>
+
+<div id="webmcp-banner" role="status"></div>
+
+<main id="main-content">
+  <section class="panel" aria-labelledby="form-heading">
+    <h2 id="form-heading">Appointment details <span id="status-badge" class="status-badge status-draft">Draft</span></h2>
+    <div id="live-status" role="status" aria-live="polite" aria-atomic="true">No actions yet. Fill in the form yourself, or let an agent use the tools on the right.</div>
+
+    <form id="appt-form" novalidate>
+      <fieldset>
+        <legend>Your information</legend>
+
+        <div class="field" id="field-full_name">
+          <label for="full_name">Full name <span class="req-mark" aria-hidden="true">*</span></label>
+          <input type="text" id="full_name" name="full_name" aria-required="true" aria-invalid="false" aria-describedby="full_name-hint full_name-error" autocomplete="name" />
+          <div class="hint" id="full_name-hint">As it should appear on your visit record.</div>
+          <div class="error-msg" id="full_name-error" role="alert"></div>
+        </div>
+
+        <div class="field" id="field-email">
+          <label for="email">Email <span class="req-mark" aria-hidden="true">*</span></label>
+          <input type="email" id="email" name="email" aria-required="true" aria-invalid="false" aria-describedby="email-hint email-error" autocomplete="email" />
+          <div class="hint" id="email-hint">We'll send your confirmation here.</div>
+          <div class="error-msg" id="email-error" role="alert"></div>
+        </div>
+
+        <div class="field" id="field-phone">
+          <label for="phone">Phone (optional)</label>
+          <input type="tel" id="phone" name="phone" aria-invalid="false" aria-describedby="phone-hint phone-error" autocomplete="tel" />
+          <div class="hint" id="phone-hint">At least 7 digits. Used only if we need to reach you about this visit.</div>
+          <div class="error-msg" id="phone-error" role="alert"></div>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Visit details</legend>
+
+        <div class="field" id="field-appointment_type">
+          <label for="appointment_type">Appointment type <span class="req-mark" aria-hidden="true">*</span></label>
+          <select id="appointment_type" name="appointment_type" aria-required="true" aria-invalid="false" aria-describedby="appointment_type-error">
+            <option value="">— Select a type —</option>
+          </select>
+          <div class="error-msg" id="appointment_type-error" role="alert"></div>
+        </div>
+
+        <div class="field" id="field-date">
+          <label for="date">Preferred date <span class="req-mark" aria-hidden="true">*</span></label>
+          <select id="date" name="date" aria-required="true" aria-invalid="false" aria-describedby="date-hint date-error">
+            <option value="">— Select a date —</option>
+          </select>
+          <div class="hint" id="date-hint">Only weekdays with open slots are listed.</div>
+          <div class="error-msg" id="date-error" role="alert"></div>
+        </div>
+
+        <div class="field" id="field-time">
+          <label for="time">Preferred time <span class="req-mark" aria-hidden="true">*</span></label>
+          <select id="time" name="time" aria-required="true" aria-invalid="false" aria-describedby="time-hint time-error">
+            <option value="">— Select a date first —</option>
+          </select>
+          <div class="hint" id="time-hint">Times already booked by other patients are not listed.</div>
+          <div class="error-msg" id="time-error" role="alert"></div>
+        </div>
+
+        <div class="field" id="field-notes">
+          <label for="notes">Notes for the clinician (optional)</label>
+          <textarea id="notes" name="notes" aria-invalid="false" aria-describedby="notes-hint notes-error" maxlength="300"></textarea>
+          <div class="hint" id="notes-hint">Up to 300 characters.</div>
+          <div class="error-msg" id="notes-error" role="alert"></div>
+        </div>
+      </fieldset>
+
+      <div class="form-actions">
+        <button type="button" class="secondary" id="manual-review-btn">Review my appointment</button>
+        <button type="button" class="danger" id="reset-btn">Start over</button>
+      </div>
+
+      <div id="reset-confirm-row" hidden>
+        <p id="reset-confirm-text">Clear every field and go back to a blank form? This can't be undone.</p>
+        <div class="form-actions">
+          <button type="button" class="danger filled" id="reset-confirm-yes">Yes, clear everything</button>
+          <button type="button" class="secondary" id="reset-confirm-cancel">Cancel</button>
+        </div>
+      </div>
+    </form>
+
+    <div id="review-panel" role="region" aria-labelledby="review-heading" tabindex="-1" hidden>
+      <h3 id="review-heading">Review before booking</h3>
+      <p>Nothing has been booked yet. This is a preview only — <strong>booking only happens when you press the button below yourself.</strong> No tool or agent can press it for you.</p>
+      <dl id="review-fields"></dl>
+      <button type="button" id="confirm-btn">Confirm &amp; book appointment</button>
+      <button type="button" class="secondary" id="edit-btn">Go back and edit</button>
+    </div>
+
+    <div id="confirmed-panel" role="region" aria-labelledby="confirmed-heading" tabindex="-1" hidden>
+      <h3 id="confirmed-heading">✅ Appointment booked</h3>
+      <p id="confirmation-text"></p>
+      <button type="button" class="secondary" id="book-another-btn">Book another appointment</button>
+    </div>
+  </section>
+
+  <section class="panel" aria-labelledby="tools-heading">
+    <h2 id="tools-heading">WebMCP tools registered by this page</h2>
+    <ul class="tool-list">
+      <li><code>describe_current_state</code> — reports every field's value, which required fields are still missing, current status, and available options.</li>
+      <li><code>list_available_actions</code> — tells the agent exactly what it can do next, given the current state.</li>
+      <li><code>complete_form_field</code> — fills one field (<code>full_name</code>, <code>email</code>, <code>phone</code>, <code>appointment_type</code>, <code>date</code>, <code>time</code>, <code>notes</code>), validating it and updating the real DOM inputs on screen.</li>
+      <li><code>confirm_and_submit</code> — checks the form is complete, then <em>stages</em> a review. It cannot finalize the booking itself: finalizing requires a real click on the "Confirm &amp; book appointment" button, which is wired to plain UI code, not to any tool.</li>
+    </ul>
+    <p class="hint">"Start over" is deliberately <strong>not</strong> a tool either, for the same reason: an agent can help you fill the form, but only you can throw away your own progress or finalize a booking.</p>
+
+    <h3>Tool call console</h3>
+    <p class="hint">This calls the exact same functions registered with <code>document.modelContext</code> — useful for testing in any browser, even one without WebMCP support yet.</p>
+    <div class="console-row">
+      <label for="console-tool" style="margin:0;">Tool</label>
+      <select id="console-tool"></select>
+      <button type="button" class="secondary" id="console-run">Run tool</button>
+      <button type="button" class="secondary" id="console-clear">Clear log</button>
+    </div>
+    <label for="console-args">Arguments (JSON)</label>
+    <textarea id="console-args" spellcheck="false"></textarea>
+    <div id="console-log" role="log" aria-live="polite" aria-relevant="additions" aria-label="Tool call log" tabindex="0"></div>
+  </section>
+</main>
+
+<footer>
+  Built as a college project demonstrating WebMCP. No backend — all state lives in this page's memory and resets on reload.
+  Tool registration uses <code>document.modelContext.registerTool()</code> per the WebMCP proposal.
+  See <a href="README.md">README.md</a> for full documentation and <a href="TESTING.md">TESTING.md</a> for the manual test plan.
+</footer>
+
+<script src="js/data.js"></script>
+<script src="js/validation.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
