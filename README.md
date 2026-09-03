@@ -6,7 +6,8 @@ assistant extension, etc.) can fill out and stage a booking on a user's
 behalf — while a **hard, code-level guarantee** ensures only the human in
 front of the screen can actually finalize it.
 
-Live demo: **[link added after deployment — see "Deployment" below]**
+Live demo: **[pipaniaastha.github.io/wepmcp-appointment](https://pipaniaastha.github.io/wepmcp-appointment/)**
+Source: **[github.com/pipaniaastha/wepmcp-appointment](https://github.com/pipaniaastha/wepmcp-appointment)**
 
 ## Table of contents
 
@@ -291,11 +292,14 @@ validation path, plus a UI/accessibility checklist.
 ## Deployment
 
 Deployed as a static site via **GitHub Pages** directly from this repository
-(no build step — `index.html` is the entry point at the repo root). See the
-badge/link at the top of this file for the live URL.
+(no build step — `index.html` is the entry point at the repo root), serving
+the `main` branch from `/ (root)`:
 
-To redeploy after changes: push to the default branch; GitHub Pages rebuilds
-automatically from the configured branch/folder.
+**<https://pipaniaastha.github.io/wepmcp-appointment/>**
+
+To redeploy after changes: push to `main`; GitHub Pages rebuilds
+automatically from the configured branch/folder, usually live within a
+minute or two.
 
 ## Design decisions worth knowing about
 
