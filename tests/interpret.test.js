@@ -45,6 +45,37 @@ test("buildSystemPrompt: instructs strict JSON-only output shape", function () {
   assert.match(prompt, /"clarification"/);
 });
 
+// ---------- buildResponseSchema (Groq strict json_schema mode) ----------
+test("buildResponseSchema: top-level shape requires resolved/unresolved/clarification", function () {
+  var schema = Interpret.buildResponseSchema(VALID_FIELDS);
+  assert.equal(schema.type, "object");
+  assert.deepEqual(schema.required, ["resolved", "unresolved", "clarification"]);
+  assert.equal(schema.additionalProperties, false);
+});
+test("buildResponseSchema: resolved sub-schema has one nullable string property per valid field", function () {
+  var schema = Interpret.buildResponseSchema(VALID_FIELDS);
+  var resolvedSchema = schema.properties.resolved;
+  assert.equal(resolvedSchema.type, "object");
+  assert.equal(resolvedSchema.additionalProperties, false);
+  // Strict mode requires every property to be listed in "required" — this
+  // is how "optional" fields are modeled: always present, nullable.
+  assert.deepEqual(resolvedSchema.required.slice().sort(), VALID_FIELDS.slice().sort());
+  VALID_FIELDS.forEach(function (field) {
+    assert.deepEqual(resolvedSchema.properties[field].type, ["string", "null"]);
+  });
+});
+test("buildResponseSchema: does not include a property for a field not in validFieldNames", function () {
+  var schema = Interpret.buildResponseSchema(["appointment_type"]);
+  assert.deepEqual(Object.keys(schema.properties.resolved.properties), ["appointment_type"]);
+  assert.deepEqual(schema.properties.resolved.required, ["appointment_type"]);
+});
+test("buildResponseSchema: unresolved is an array of strings, clarification is a string", function () {
+  var schema = Interpret.buildResponseSchema(VALID_FIELDS);
+  assert.equal(schema.properties.unresolved.type, "array");
+  assert.equal(schema.properties.unresolved.items.type, "string");
+  assert.equal(schema.properties.clarification.type, "string");
+});
+
 // ---------- parseInterpretationResponse: valid shapes ----------
 test("parseInterpretationResponse: fully resolved response", function () {
   var res = Interpret.parseInterpretationResponse(
@@ -117,9 +148,33 @@ test("parseInterpretationResponse: rejects a non-string resolved value", functio
   var res = Interpret.parseInterpretationResponse(JSON.stringify({ resolved: { time: 900 } }), VALID_FIELDS);
   assert.equal(res.ok, false);
 });
-test("parseInterpretationResponse: rejects an empty-string resolved value rather than treating it as set", function () {
+test("parseInterpretationResponse: an empty-string resolved value is treated as not-resolved, not an error", function () {
   var res = Interpret.parseInterpretationResponse(JSON.stringify({ resolved: { date: "" } }), VALID_FIELDS);
-  assert.equal(res.ok, false);
+  assert.equal(res.ok, true);
+  assert.deepEqual(res.resolved, {});
+});
+test("parseInterpretationResponse: a null resolved value is treated as not-resolved, not an error (Groq strict-schema shape)", function () {
+  var res = Interpret.parseInterpretationResponse(
+    JSON.stringify({ resolved: { appointment_type: "dental_cleaning", date: null, time: null, notes: null }, unresolved: ["date", "time"], clarification: "Which day and time?" }),
+    VALID_FIELDS
+  );
+  assert.equal(res.ok, true);
+  assert.deepEqual(res.resolved, { appointment_type: "dental_cleaning" });
+});
+test("parseInterpretationResponse: realistic full Groq strict-mode response (every key present, some null)", function () {
+  // Strict JSON Schema mode requires every property in "required" to be
+  // present, so a real Groq response always includes all four resolved
+  // keys, using null (not omission) for anything it can't confidently set.
+  var res = Interpret.parseInterpretationResponse(
+    JSON.stringify({
+      resolved: { appointment_type: "general_checkup", date: "2026-09-07", time: "09:00", notes: null },
+      unresolved: [],
+      clarification: ""
+    }),
+    VALID_FIELDS
+  );
+  assert.equal(res.ok, true);
+  assert.deepEqual(res.resolved, { appointment_type: "general_checkup", date: "2026-09-07", time: "09:00" });
 });
 test("parseInterpretationResponse: unresolved must be an array if present", function () {
   var res = Interpret.parseInterpretationResponse(JSON.stringify({ resolved: {}, unresolved: "date, time" }), VALID_FIELDS);

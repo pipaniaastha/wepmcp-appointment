@@ -415,40 +415,55 @@
   // Every other tool above is pure input validation — regex/format checks,
   // array membership, direct state/DOM writes, no model in the loop. This
   // tool is different: it sends the user's free-form phrase to a real LLM
-  // (OpenAI) and asks it to resolve the ambiguity, but the LLM's output is
-  // NOT trusted directly. Two independent safeguards apply before anything
-  // reaches state:
+  // (via Groq's API) and asks it to resolve the ambiguity, but the LLM's
+  // output is NOT trusted directly. Two independent safeguards apply before
+  // anything reaches state:
   //   1. The system prompt (Interpret.buildSystemPrompt) shows the model
   //      ONLY the clinic's real, currently-valid appointment types, dates,
   //      and open times — it has no way to "know about" a slot that
-  //      doesn't exist.
+  //      doesn't exist. The request also constrains the model's output to
+  //      a fixed JSON Schema (Interpret.buildResponseSchema) via Groq's
+  //      strict structured-outputs mode, so the response is guaranteed —
+  //      by Groq's constrained decoding, not just prompt wording — to be
+  //      well-formed JSON in exactly the expected shape.
   //   2. Whatever the model proposes is still run through applyFieldValue()
   //      — the EXACT SAME function complete_form_field uses — so even a
   //      confidently-wrong or stale answer (e.g. a slot that got booked
   //      between the prompt being built and the model responding) is
-  //      rejected by real validation, not silently applied.
+  //      rejected by real validation, not silently applied. This doesn't
+  //      rely on Groq's schema guarantee holding — parseInterpretationResponse
+  //      re-validates the shape defensively regardless (see js/interpret.js).
   // If the model can't confidently resolve something, it's instructed to
   // say so via "unresolved"/"clarification" rather than guess — and this
   // tool passes that through honestly rather than picking an answer itself.
   //
+  // Why Groq: same bring-your-own-key, no-backend architecture as before,
+  // just pointed at a different (OpenAI-API-compatible) endpoint. Groq's
+  // free tier means testing this for real costs nothing — see README.md's
+  // "interpret_intent" section for the full rationale and the model choice
+  // (openai/gpt-oss-20b: fast, cheap, and one of the models Groq supports
+  // in strict JSON-schema mode).
+  //
   // VERIFICATION NOTE (implemented-to-spec, not live-verified by me): this
-  // environment has no OpenAI API key available to it, so the actual
-  // network round-trip to api.openai.com has NOT been exercised with a
-  // real key or a real model response in this session. What HAS been
-  // verified: the prompt-building and response-parsing logic
-  // (tests/interpret.test.js, pure/automated), and the full pipeline from
-  // a mocked fetch() response through parsing, per-field validation, and
-  // state/DOM writes, exercised live in a real browser by substituting a
-  // canned response for the network call — the same disclosed technique
-  // used for SpeechRecognition. See README.md for the full disclosure and
-  // for how to test this yourself with a real key.
-  var OPENAI_KEY_STORAGE = "webmcp-appointment:openai-key";
-  var OPENAI_MODEL = "gpt-4o-mini";
+  // environment has no Groq API key available to it, so the actual network
+  // round-trip to api.groq.com has NOT been exercised with a real key or a
+  // real model response in this session — the free tier removes the
+  // billing barrier for a human tester, not my inability to sign up for a
+  // third-party account myself. What HAS been verified: the prompt/schema-
+  // building and response-parsing logic (tests/interpret.test.js,
+  // pure/automated), and the full pipeline from a mocked fetch() response
+  // through parsing, per-field validation, and state/DOM writes, exercised
+  // live in a real browser by substituting a canned response for the
+  // network call — the same disclosed technique used for SpeechRecognition.
+  // See README.md for the full disclosure and for how to test this
+  // yourself with a real (free) key.
+  var GROQ_KEY_STORAGE = "webmcp-appointment:groq-key";
+  var GROQ_MODEL = "openai/gpt-oss-20b";
   var INTERPRET_FIELDS = ["appointment_type", "date", "time", "notes"];
 
-  function getOpenAIKey() {
+  function getGroqKey() {
     try {
-      return localStorage.getItem(OPENAI_KEY_STORAGE) || "";
+      return localStorage.getItem(GROQ_KEY_STORAGE) || "";
     } catch (e) {
       return "";
     }
@@ -464,21 +479,29 @@
     });
   }
 
-  // The one network call in this whole app. Talks directly to OpenAI using
-  // a key the user supplied themselves (see the "AI interpreter" section
-  // wiring below) — never a key bundled with or committed to this project.
-  async function callOpenAIForIntent(text, apiKey) {
+  // The one network call in this whole app. Talks directly to Groq's
+  // OpenAI-compatible API using a key the user supplied themselves (see the
+  // "AI interpreter" section wiring below) — never a key bundled with or
+  // committed to this project.
+  async function callGroqForIntent(text, apiKey) {
     var systemPrompt = Interpret.buildSystemPrompt(APPOINTMENT_TYPES, buildDateTimeTable());
-    var response = await fetch("https://api.openai.com/v1/chat/completions", {
+    var response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Authorization": "Bearer " + apiKey
       },
       body: JSON.stringify({
-        model: OPENAI_MODEL,
+        model: GROQ_MODEL,
         temperature: 0,
-        response_format: { type: "json_object" },
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "interpret_intent_result",
+            strict: true,
+            schema: Interpret.buildResponseSchema(INTERPRET_FIELDS)
+          }
+        },
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: text }
@@ -488,11 +511,11 @@
     if (!response.ok) {
       var errText = "";
       try { errText = await response.text(); } catch (e) { /* ignore */ }
-      throw new Error("OpenAI API error " + response.status + (errText ? ": " + errText : ""));
+      throw new Error("Groq API error " + response.status + (errText ? ": " + errText : ""));
     }
     var data = await response.json();
     var content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-    if (!content) throw new Error("OpenAI's response had no message content.");
+    if (!content) throw new Error("Groq's response had no message content.");
     return content;
   }
 
@@ -503,14 +526,14 @@
       return { content: [{ type: "text", text: "Missing required argument: text" }], isError: true };
     }
 
-    var apiKey = getOpenAIKey();
+    var apiKey = getGroqKey();
     if (!apiKey) {
       return {
         content: [{
           type: "text",
-          text: "No OpenAI API key is configured, so interpret_intent can't run. This tool never guesses without " +
-            "one — ask the human to open the \"AI interpreter\" section on the page, paste an OpenAI API key " +
-            "(stored only in their browser), and try again."
+          text: "No Groq API key is configured, so interpret_intent can't run. This tool never guesses without " +
+            "one — ask the human to open the \"AI interpreter\" section on the page, paste a Groq API key " +
+            "(free to create, stored only in their browser), and try again."
         }],
         isError: true
       };
@@ -518,7 +541,7 @@
 
     var rawContent;
     try {
-      rawContent = await callOpenAIForIntent(text, apiKey);
+      rawContent = await callGroqForIntent(text, apiKey);
     } catch (e) {
       return { content: [{ type: "text", text: "Couldn't reach the AI interpreter: " + e.message }], isError: true };
     }
@@ -595,7 +618,7 @@
     },
     {
       name: "interpret_intent",
-      description: "Interpret a free-form, ambiguous natural-language appointment request (e.g. \"book me something Tuesday afternoon for a check-up\" or \"whenever's soonest for a dental cleaning\") using a real LLM call, resolved ONLY against this clinic's actual current appointment types, available dates, and open time slots — it never invents a value that doesn't exist. Every value it proposes is then run through the exact same validation complete_form_field uses, so a confident-sounding but invalid answer is still rejected, not silently applied. Requires the human to have configured their own OpenAI API key in the page's \"AI interpreter\" section; fails honestly (does not guess) if none is configured. Like complete_form_field, this can only set field values — it cannot stage or finalize a booking.",
+      description: "Interpret a free-form, ambiguous natural-language appointment request (e.g. \"book me something Tuesday afternoon for a check-up\" or \"whenever's soonest for a dental cleaning\") using a real LLM call (via Groq), resolved ONLY against this clinic's actual current appointment types, available dates, and open time slots — it never invents a value that doesn't exist. Every value it proposes is then run through the exact same validation complete_form_field uses, so a confident-sounding but invalid answer is still rejected, not silently applied. Requires the human to have configured their own Groq API key (free tier available) in the page's \"AI interpreter\" section; fails honestly (does not guess) if none is configured. Like complete_form_field, this can only set field values — it cannot stage or finalize a booking.",
       inputSchema: {
         type: "object",
         properties: {
@@ -759,42 +782,42 @@
     clearActionLog();
   });
 
-  // ---------- AI interpreter (OpenAI key) setup — for interpret_intent ----------
-  var openaiKeyInput = document.getElementById("openai-key-input");
-  var openaiKeyStatus = document.getElementById("openai-key-status");
+  // ---------- AI interpreter (Groq key) setup — for interpret_intent ----------
+  var groqKeyInput = document.getElementById("groq-key-input");
+  var groqKeyStatus = document.getElementById("groq-key-status");
 
-  function refreshOpenAIKeyStatus() {
-    var configured = !!getOpenAIKey();
-    openaiKeyStatus.textContent = configured
-      ? "✅ Key configured — interpret_intent will make real, billed calls to OpenAI using it."
+  function refreshGroqKeyStatus() {
+    var configured = !!getGroqKey();
+    groqKeyStatus.textContent = configured
+      ? "✅ Key configured — interpret_intent will make real calls to Groq using it (free tier available)."
       : "No key configured yet — interpret_intent will fail with a clear message (never guesses) until one is set.";
   }
-  refreshOpenAIKeyStatus();
+  refreshGroqKeyStatus();
 
-  document.getElementById("openai-key-save").addEventListener("click", function () {
-    var value = openaiKeyInput.value.trim();
+  document.getElementById("groq-key-save").addEventListener("click", function () {
+    var value = groqKeyInput.value.trim();
     if (!value) {
       announce("Enter a key before saving.");
       return;
     }
     try {
-      localStorage.setItem(OPENAI_KEY_STORAGE, value);
+      localStorage.setItem(GROQ_KEY_STORAGE, value);
     } catch (e) {
       announce("Couldn't save the key: " + e.message);
       return;
     }
-    openaiKeyInput.value = "";
-    refreshOpenAIKeyStatus();
-    announce("OpenAI API key saved to this browser.");
+    groqKeyInput.value = "";
+    refreshGroqKeyStatus();
+    announce("Groq API key saved to this browser.");
   });
 
-  document.getElementById("openai-key-clear").addEventListener("click", function () {
+  document.getElementById("groq-key-clear").addEventListener("click", function () {
     try {
-      localStorage.removeItem(OPENAI_KEY_STORAGE);
+      localStorage.removeItem(GROQ_KEY_STORAGE);
     } catch (e) { /* ignore */ }
-    openaiKeyInput.value = "";
-    refreshOpenAIKeyStatus();
-    announce("OpenAI API key cleared.");
+    groqKeyInput.value = "";
+    refreshGroqKeyStatus();
+    announce("Groq API key cleared.");
   });
 
   // ---------- Simple / cognitive-load mode wiring ----------

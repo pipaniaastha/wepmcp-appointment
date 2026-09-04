@@ -62,7 +62,7 @@ exercised and demonstrated in any browser.
 
 This is a **static, almost entirely backend-free** clinic appointment form.
 (The one exception — `interpret_intent` making a direct, user-keyed call to
-OpenAI's API — is called out explicitly in its own section below; nothing
+Groq's API — is called out explicitly in its own section below; nothing
 else in this app makes a network call of any kind.) A patient (or an agent
 acting for them) fills in:
 
@@ -154,18 +154,21 @@ in-progress data.
 
 ## `interpret_intent`: the tool that actually reasons
 
-> **Verification status, stated plainly:** this environment has no OpenAI
-> API key available to it, so the literal network round-trip to
-> `api.openai.com` with a real key and a real model response has **not**
-> been exercised by me in this session. Everything short of that has: the
-> prompt-building and response-parsing logic is pure and automated-tested
-> (`tests/interpret.test.js`), and the full pipeline — from a phrase, through
-> a (mocked) model response, through real per-field validation, to actual
-> DOM/state writes — was verified live in a real browser by substituting a
-> canned response for `fetch()`, the same disclosed technique used for
-> `SpeechRecognition` in the voice-mapping work below. See "What was tested"
-> below for the exact scenarios covered this way, and how to test the real
-> network call yourself with your own key.
+> **Verification status, stated plainly:** this environment has no Groq API
+> key available to it — Groq's free tier removes the *billing* barrier for
+> a human tester, not my own inability to sign up for a third-party account.
+> So the literal network round-trip to `api.groq.com` with a real key and a
+> real model response has **not** been exercised by me in this session.
+> Everything short of that has: the prompt/schema-building and
+> response-parsing logic is pure and automated-tested
+> (`tests/interpret.test.js`), and the full pipeline — from a phrase,
+> through a (mocked) model response, through real per-field validation, to
+> actual DOM/state writes — was verified live in a real browser by
+> substituting a canned response for `fetch()` (and inspecting the real,
+> unmocked outgoing request to confirm its shape), the same disclosed
+> technique used for `SpeechRecognition` in the voice-mapping work below.
+> See "What was tested" below for the exact scenarios covered this way, and
+> how to test the real network call yourself with your own (free) key.
 
 ### Why this one is different
 
@@ -186,12 +189,19 @@ requiring the caller to already know the exact `field`/`value` pairs
    The model is explicitly instructed never to invent a value outside these
    lists, and to leave a field unresolved (with a `clarification` question)
    rather than guess when the request is genuinely ambiguous.
-2. **The model must respond with strict JSON** (`{"resolved": {...},
-   "unresolved": [...], "clarification": "..."}`), requested via OpenAI's
-   `response_format: {type: "json_object"}` and parsed defensively by
-   `Interpret.parseInterpretationResponse()` — which rejects (rather than
-   trusts) any unknown field name, non-string value, or malformed shape, so
-   a broken or adversarial model response can't corrupt app state.
+2. **The response is constrained to a fixed JSON Schema, not just asked for
+   nicely.** The request uses Groq's *strict* structured-outputs mode
+   (`response_format: {type: "json_schema", json_schema: {strict: true,
+   schema: ...}}`, built by `Interpret.buildResponseSchema()`) — Groq's
+   documentation describes this as constrained decoding that guarantees the
+   response matches the schema, which is a meaningfully stronger guarantee
+   than the looser "valid JSON, shape not enforced" `json_object` mode most
+   providers default to. The response is still parsed defensively by
+   `Interpret.parseInterpretationResponse()` regardless — which rejects
+   (rather than trusts) any unknown field name, non-string/non-null value,
+   or malformed shape — because Groq's guarantee is *their* claim, not
+   something this code can verify for itself, and the defensive parsing
+   costs nothing to keep.
 3. **Every resolved value still goes through `applyFieldValue()`** — the
    *exact* function `complete_form_field` and typing both use. This is the
    core safety property the tool exists to demonstrate: reasoning feeds
@@ -208,12 +218,29 @@ requiring the caller to already know the exact `field`/`value` pairs
 ### The one network call in this app
 
 This is the only feature that talks to a network. It's a direct,
-browser-to-OpenAI `fetch()` call (`js/app.js`'s `callOpenAIForIntent`) using
-an API key **the user supplies themselves**, pasted into the "AI
-interpreter" section of the page and stored only in that browser's
-`localStorage`. This was a deliberate architecture choice, not the only
-option:
+browser-to-Groq `fetch()` call (`js/app.js`'s `callGroqForIntent`, hitting
+`https://api.groq.com/openai/v1/chat/completions`) using an API key **the
+user supplies themselves**, pasted into the "AI interpreter" section of the
+page and stored only in that browser's `localStorage`. This was a
+deliberate architecture choice, not the only option:
 
+- **Why Groq specifically?** Its chat completions API is
+  OpenAI-request-format-compatible (same `messages`/`response_format`
+  shape, same `Authorization: Bearer` header — see the `/openai/v1/` in its
+  URL), so swapping providers was a small, contained change, not a
+  rearchitecture. Its free tier is the practical reason a *real* end-to-end
+  test is now genuinely low-friction for anyone trying this project — no
+  billing setup required to get a key and try it.
+- **Why `openai/gpt-oss-20b` as the model?** Checked directly against
+  Groq's current model docs rather than assumed: it's Groq's fastest
+  production model (~1,000 tokens/sec) at the lowest per-token cost, and —
+  the deciding factor for this use case — it's one of the models Groq
+  supports in **strict** JSON-schema mode (guaranteed-schema-conforming
+  output via constrained decoding), unlike the larger Llama models Groq
+  hosts, which only get Groq's *best-effort* schema support. For a tool
+  whose entire value proposition is "structured extraction you can trust,"
+  the model with the strongest structured-output guarantee was the right
+  pick over a larger but looser-output alternative.
 - **Why not a backend proxy holding a shared key?** This project is
   deployed as a static site (GitHub Pages) with no server of its own to
   hold a secret — standing one up just for this would be a much larger
@@ -224,28 +251,38 @@ option:
   It was set aside here mainly because small in-browser models are
   meaningfully weaker at reliable structured-JSON extraction than a real
   hosted model, and a multi-hundred-MB-plus model download doesn't fit this
-  project's "open the page, it just works" feel.
+  project's "open the page, it just works" feel. Groq's free tier closes
+  most of the practical gap this option would have otherwise filled.
 - **Trade-offs of bring-your-own-key, stated honestly:** the key sits in
   `localStorage` in **plain text** — readable by any script running on this
   exact origin (there isn't one here beyond this app's own code, but this is
   a real, general caveat of the pattern, not a nonexistent risk) and visible
   in DevTools to anyone with access to the device. Using the tool makes
-  real, billed API calls against the user's own OpenAI account. Both
-  caveats are stated on the page itself, next to the key input, not just
-  here.
+  real API calls against the user's own Groq account — free-tier limits
+  still apply, and heavy use could exceed them. Both caveats are stated on
+  the page itself, next to the key input, not just here.
 
 ### What was tested (and what wasn't)
 
 Verified live, in a real browser, by mocking `window.fetch` to intercept
-only requests to `api.openai.com` and return a canned response (everything
+only requests to `api.groq.com` and return a canned response (everything
 else — the actual tool call, argument parsing, validation, DOM writes,
-Action log entry — is the real, unmodified code path):
+Action log entry — is the real, unmodified code path). The mock also
+captured the real outgoing request so its shape could be checked directly,
+not just the response handling:
 
+- The real request body — confirmed the endpoint, `model:
+  "openai/gpt-oss-20b"`, the full strict `json_schema` `response_format`
+  object, and the `Authorization: Bearer <key>` header all match Groq's
+  documented request shape exactly.
 - A realistic ambiguous phrase ("book me something Tuesday afternoon for a
-  check-up") resolving cleanly to real values, all three fields actually
-  set on the real form.
+  check-up") resolving cleanly to real values via a response shaped exactly
+  like Groq's strict mode produces (every `resolved` key present, unset
+  ones as `null` rather than omitted) — all three fields actually set on
+  the real form, and the `null` `notes` field correctly left untouched
+  rather than treated as an error.
 - A genuinely ambiguous phrase ("whenever's soonest, I don't really mind")
-  where the mocked model returns no resolved fields and a clarification
+  where the mocked model returns every field `null` plus a clarification
   question — confirming the tool surfaces that honestly and **sets
   nothing**, rather than picking an answer.
 - A model response that confidently proposes a real appointment type and
@@ -255,23 +292,24 @@ Action log entry — is the real, unmodified code path):
 - A non-JSON model response (e.g. a plain-English sentence instead of the
   requested JSON) — confirmed to fail gracefully with a clear message, not
   crash.
-- An OpenAI API error response (e.g. HTTP 401 for a bad key) — confirmed to
+- A Groq API error response (e.g. HTTP 401 for a bad key) — confirmed to
   surface a clear, honest error rather than hang or silently fail.
 - No API key configured at all — confirmed the tool refuses outright with
   an explanatory message, before ever attempting a network call.
 - A missing `text` argument — confirmed a clear validation error.
 - The key-management UI itself (save, clear, status text updates,
-  `localStorage` persistence) and that the whole "AI interpreter" section is
-  hidden in Simple mode along with the rest of the developer-facing panel.
+  `localStorage` persistence under the new `webmcp-appointment:groq-key`
+  key) and that the whole "AI interpreter" section is hidden in Simple mode
+  along with the rest of the developer-facing panel.
 
-**Not verified:** an actual live call to `api.openai.com` with a real key
-and a real model producing a real transcript of its reasoning over a real
-ambiguous phrase. To test that yourself: get a key at
-[platform.openai.com/api-keys](https://platform.openai.com/api-keys), paste
-it into the "AI interpreter" section, and either type a phrase into the Tool
-Call Console's `interpret_intent` arguments or ask an agent with WebMCP
-access to call it. `tests/interpret.test.js` covers the deterministic
-prompt/parsing logic (20 cases) with `npm test`.
+**Not verified:** an actual live call to `api.groq.com` with a real key and
+a real model producing a real transcript of its reasoning over a real
+ambiguous phrase. To test that yourself: get a free key at
+[console.groq.com/keys](https://console.groq.com/keys), paste it into the
+"AI interpreter" section, and either type a phrase into the Tool Call
+Console's `interpret_intent` arguments or ask an agent with WebMCP access to
+call it. `tests/interpret.test.js` covers the deterministic
+prompt/schema/parsing logic (26 cases) with `npm test`.
 
 ## Beyond the tools
 
@@ -475,19 +513,19 @@ webmcp-appointment/
 │   │                        browser.
 │   ├── voice.js              Pure transcript-matching/normalization logic
 │   │                        for voice input. Same pattern, same reason.
-│   ├── interpret.js          Pure prompt-building + response-parsing logic
-│   │                        for interpret_intent. Same pattern, same
-│   │                        reason — the actual OpenAI fetch() call is the
+│   ├── interpret.js          Pure prompt/schema-building + response-parsing
+│   │                        logic for interpret_intent. Same pattern, same
+│   │                        reason — the actual Groq fetch() call is the
 │   │                        one impure part, and lives in app.js.
 │   └── app.js               State, DOM wiring, all five WebMCP tool
 │                            implementations + registration, the Action log,
 │                            the Tool Call Console, Simple mode, voice
-│                            input, scan mode, and the OpenAI key UI.
+│                            input, scan mode, and the Groq key UI.
 ├── tests/
 │   ├── validation.test.js   node:test unit tests for js/data.js and
 │   │                        js/validation.js (36 cases).
 │   ├── voice.test.js         node:test unit tests for js/voice.js (15 cases).
-│   └── interpret.test.js     node:test unit tests for js/interpret.js (20 cases).
+│   └── interpret.test.js     node:test unit tests for js/interpret.js (26 cases).
 ├── scripts/
 │   └── serve.js              Zero-dependency static file server for local dev.
 ├── TESTING.md               Manual end-to-end test plan (tools + UI + a11y).
@@ -607,7 +645,7 @@ a Node test suite:
 npm test
 ```
 
-This runs 71 cases via the built-in `node:test` runner (Node ≥ 18, no test
+This runs 77 cases via the built-in `node:test` runner (Node ≥ 18, no test
 framework dependency) covering: every required/optional field's valid and
 invalid paths, the booked-slot conflict check, the "must pick a date before a
 time" ordering rule, unknown-field/unknown-option handling, the
@@ -647,7 +685,7 @@ validation path, plus a UI/accessibility checklist.
    name is [X], email [Y]."* — watch it call `describe_current_state` first,
    fill fields one at a time with `complete_form_field`, call
    `confirm_and_submit`, and then correctly stop and tell you a human needs
-   to click the button; or, with an OpenAI key configured (see
+   to click the button; or, with a free Groq key configured (see
    ["interpret_intent"](#interpret_intent-the-tool-that-actually-reasons)),
    *"Ask the page to interpret 'whenever's soonest for a dental cleaning' for
    me"* — watch it call `interpret_intent` and then either fill in the rest

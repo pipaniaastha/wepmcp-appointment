@@ -1,6 +1,6 @@
 # Manual test plan
 
-This complements the automated suite (`npm test`, 71 cases across
+This complements the automated suite (`npm test`, 77 cases across
 `tests/validation.test.js`, `tests/voice.test.js`, and
 `tests/interpret.test.js`, covering `js/validation.js`, `js/data.js`,
 `js/voice.js`, and `js/interpret.js` in isolation). Those tests don't touch
@@ -10,8 +10,11 @@ form, focus management, and live-region behavior.
 **A note on §5, §10, and §11 (interpret_intent, voice input, and scan
 mode):** these three features are implemented to spec but have not been
 fully verified with real external dependencies this environment doesn't
-have — a real OpenAI API key and a real model response, a microphone and
-real speech, or a physical switch-access device, respectively. Each
+have — a real Groq API key and a real model response, a microphone and
+real speech, or a physical switch-access device, respectively. (Groq's free
+tier removes the *billing* barrier to testing §5 for real — it doesn't
+change that this environment still can't sign up for a third-party account
+on its own.) Each
 section's steps use a documented technique — patching `fetch()` or
 `SpeechRecognition`'s prototype methods to return a canned response instead
 of hitting the real network/microphone — to exercise the real code path
@@ -135,22 +138,27 @@ typing into the matching form control and blurring/changing it.
 Section 5.1 tests the honest-refusal path, which needs no key and no
 network mocking at all. Sections 5.2+ need the fetch-mocking technique
 below, which safely exercises the real tool/validation pipeline without a
-real OpenAI key or any real network call — the same kind of substitution
-used for `SpeechRecognition` in §10.
+real Groq key or any real network call — the same kind of substitution
+used for `SpeechRecognition` in §10. Note that a real response from
+`openai/gpt-oss-20b` in Groq's strict JSON-schema mode always includes
+every one of the four `resolved` keys, using `null` (never omission) for
+anything it didn't resolve — the mocked responses below use that same
+realistic shape.
 
 | # | Steps | Expected |
 |---|---|---|
-| 5.1 | With no OpenAI key configured (default state, or after clicking "Clear key"), run `interpret_intent({"text": "book me something Tuesday afternoon"})`. | `isError: true`; message explains no key is configured and that the tool "never guesses without one" — **no network request is attempted** (check the Network tab: nothing to `api.openai.com`). |
-| 5.2 | Paste any placeholder text into "OpenAI API key" and click "Save key." | Status line switches to "✅ Key configured — interpret_intent will make real, billed calls to OpenAI using it."; the input clears; `localStorage.getItem("webmcp-appointment:openai-key")` now holds the value. |
-| 5.3 | In DevTools, mock the network call (paste into the console): `var rf = window.fetch; window.fetch = function(u,o){ if(String(u).indexOf("api.openai.com")===-1) return rf(u,o); return Promise.resolve({ok:true, json:()=>Promise.resolve({choices:[{message:{content: window.__mock}}]}), text:()=>Promise.resolve("")}); };` then set `window.__mock` to a JSON string and run `interpret_intent`. | Sets up safe, hardware/network-free testing of the real pipeline (prompt building is skipped since the request body isn't inspected here — that's covered by the automated `tests/interpret.test.js` — this tests everything from the response onward). |
-| 5.4 | `window.__mock = JSON.stringify({resolved:{appointment_type:"general_checkup", date:"<a real available date from describe_current_state>", time:"<a real open time on that date>"}, unresolved:[], clarification:""})`, then run `interpret_intent({"text":"book me something Tuesday afternoon for a check-up"})`. | All three fields are actually set on the real form (check `describe_current_state` or the visible selects); result text lists what was set; live-status announces it. |
-| 5.5 | `window.__mock = JSON.stringify({resolved:{}, unresolved:["appointment_type","date","time"], clarification:"What kind of appointment do you need, and when?"})`, run `interpret_intent({"text":"whenever's soonest, I don't really mind"})`. | `isError: true` (nothing was set); result text includes "Could not confidently resolve" and the clarification question; **no field changes** — the tool asks rather than guesses. |
-| 5.6 | `window.__mock = JSON.stringify({resolved:{appointment_type:"dental_cleaning", date:"<a real date>", time:"<a time that IS already booked on that date, per describe_current_state's open-times line>"}, unresolved:[], clarification:""})`, run `interpret_intent`. | `appointment_type` and `date` **are** set (they were valid); `time` is **rejected** — result text includes "Rejected — reasoning does not bypass validation" with the real "already booked" message. This is the direct proof that a confident-sounding AI answer doesn't bypass validation. |
+| 5.1 | With no Groq key configured (default state, or after clicking "Clear key"), run `interpret_intent({"text": "book me something Tuesday afternoon"})`. | `isError: true`; message explains no key is configured and that the tool "never guesses without one" — **no network request is attempted** (check the Network tab: nothing to `api.groq.com`). |
+| 5.2 | Paste any placeholder text into "Groq API key" and click "Save key." | Status line switches to "✅ Key configured — interpret_intent will make real calls to Groq using it (free tier available)."; the input clears; `localStorage.getItem("webmcp-appointment:groq-key")` now holds the value. |
+| 5.3 | In DevTools, mock the network call and capture the real outgoing request (paste into the console): `var rf = window.fetch; window.__req = null; window.fetch = function(u,o){ if(String(u).indexOf("api.groq.com")===-1) return rf(u,o); window.__req = {url:u, body:JSON.parse(o.body)}; return Promise.resolve({ok:true, json:()=>Promise.resolve({choices:[{message:{content: window.__mock}}]}), text:()=>Promise.resolve("")}); };` then set `window.__mock` to a JSON string and run `interpret_intent`. | Sets up safe, hardware/network-free testing of the real pipeline. |
+| 5.3a | After any call in this section, inspect `window.__req`. | `url` is `https://api.groq.com/openai/v1/chat/completions`; `body.model` is `"openai/gpt-oss-20b"`; `body.response_format` is `{type:"json_schema", json_schema:{name:"interpret_intent_result", strict:true, schema:{...}}}` with the schema's `resolved` sub-object requiring all four field names with `type:["string","null"]` each — confirming the real request matches Groq's documented strict-mode shape, not just that a response gets handled. |
+| 5.4 | `window.__mock = JSON.stringify({resolved:{appointment_type:"general_checkup", date:"<a real available date from describe_current_state>", time:"<a real open time on that date>", notes:null}, unresolved:[], clarification:""})`, then run `interpret_intent({"text":"book me something Tuesday afternoon for a check-up"})`. | All three fields are actually set on the real form (check `describe_current_state` or the visible selects); the `null` `notes` field is left untouched, not treated as an error; result text lists what was set; live-status announces it. |
+| 5.5 | `window.__mock = JSON.stringify({resolved:{appointment_type:null,date:null,time:null,notes:null}, unresolved:["appointment_type","date","time"], clarification:"What kind of appointment do you need, and when?"})`, run `interpret_intent({"text":"whenever's soonest, I don't really mind"})`. | `isError: true` (nothing was set); result text includes "Could not confidently resolve" and the clarification question; **no field changes** — the tool asks rather than guesses. |
+| 5.6 | `window.__mock = JSON.stringify({resolved:{appointment_type:"dental_cleaning", date:"<a real date>", time:"<a time that IS already booked on that date, per describe_current_state's open-times line>", notes:null}, unresolved:[], clarification:""})`, run `interpret_intent`. | `appointment_type` and `date` **are** set (they were valid); `time` is **rejected** — result text includes "Rejected — reasoning does not bypass validation" with the real "already booked" message. This is the direct proof that a confident-sounding AI answer doesn't bypass validation. |
 | 5.7 | `window.__mock = "Sure, I think you'd like a dental cleaning."` (not JSON), run `interpret_intent`. | `isError: true`; "The AI's response couldn't be used: ...wasn't valid JSON..."; no fields touched; no crash. |
-| 5.8 | Mock a non-OK response instead (`ok:false, status:401, text:()=>Promise.resolve('{"error":"bad key"}')`), run `interpret_intent`. | `isError: true`; "Couldn't reach the AI interpreter: OpenAI API error 401: ..."; no fields touched. |
+| 5.8 | Mock a non-OK response instead (`ok:false, status:401, text:()=>Promise.resolve('{"error":"bad key"}')`), run `interpret_intent`. | `isError: true`; "Couldn't reach the AI interpreter: Groq API error 401: ..."; no fields touched. |
 | 5.9 | Run `interpret_intent({})` (no `text`). | `isError: true`, "Missing required argument: text" — no network call attempted. |
 | 5.10 | Repeat 5.4 via the "Review my appointment" area is N/A here (interpret_intent has no button alias, unlike confirm_and_submit) — instead confirm it appears correctly in the **Action log**: timestamp, `interpret_intent({"text":"..."})`, and the ✓/✗ result. | Logged identically to every other tool call — no special-casing. |
-| 5.11 | Click "Clear key," then repeat 5.1. | Same honest refusal as 5.1 — clearing genuinely removes the key, not just hides the UI. |
+| 5.11 | Click "Clear key," then repeat 5.1. | Same honest refusal as 5.1 — clearing genuinely removes the key, not just hides the UI (`localStorage.getItem("webmcp-appointment:groq-key")` is `null`). |
 
 ## 6. Reset ("Start over") — deliberately not a tool
 
