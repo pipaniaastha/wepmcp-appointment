@@ -1020,20 +1020,46 @@
   // separate "select" action to build, which mirrors how real switch-access
   // software integrates with ordinary web content (it sends a synthetic
   // keypress to whatever the OS/browser currently has focused). Scanning
-  // self-pauses whenever focus lands in a free-text field, since a user
-  // needs unlimited time to type once they've scanned their way there.
+  // self-pauses once the user actually starts typing in a free-text field
+  // (a real `input` event, not merely scanning having landed there), since
+  // a user needs unlimited time to type once they've scanned their way
+  // there — but it keeps advancing through an untouched text field just
+  // like any other control, so it never gets stuck somewhere the user
+  // hasn't engaged with. (An earlier version paused on mere focus, which
+  // meant scanning could freeze permanently on the first text field it
+  // ever reached, even with zero interaction — found via manual testing,
+  // fixed; see the note by textEntryTouchedSinceArrival below.)
   //
   // VERIFICATION NOTE (implemented-to-spec, not hardware-verified): every
-  // behavior described above (focus order, wraparound, pause-on-text-entry,
-  // Escape-to-stop, interval changes) was exercised here by simulating
-  // keyboard/focus events programmatically in a real browser session — see
-  // TESTING.md. This has NOT been tested with a real switch-access device
-  // (a physical switch, sip-and-puff controller, eye-tracker acting as a
-  // switch, etc.); only the on-page scanning mechanics are verified.
+  // behavior described above (focus order, wraparound, pause-only-when-
+  // actually-typing, Escape-to-stop, interval changes) was exercised here
+  // by simulating keyboard/focus/input events programmatically in a real
+  // browser session — see TESTING.md. This has NOT been tested with a real
+  // switch-access device (a physical switch, sip-and-puff controller,
+  // eye-tracker acting as a switch, etc.); only the on-page scanning
+  // mechanics are verified.
   var scanModeToggle = document.getElementById("scan-mode-toggle");
   var scanIntervalSelect = document.getElementById("scan-interval");
   var scanIntervalId = null;
   var scanModeOn = false;
+
+  // BUG FIX (found via manual testing): scanTick() used to pause forever
+  // the moment focus merely *was on* a text-entry element, with no way to
+  // tell "the user is actively typing here" apart from "scanning just
+  // landed here and nothing has happened since." Since nothing else ever
+  // moves focus on its own, that meant scanning got permanently stuck on
+  // the very first text field it reached, even with zero user interaction
+  // — reproduced live: toggling Scan mode on with no interaction advanced
+  // normally through several controls, then froze solid on "Full name."
+  // Fix: track genuine typing activity (a real `input` event on the
+  // currently-focused text field) instead of just where focus happens to
+  // be, and only pause when that's actually happened since arriving there.
+  var textEntryTouchedSinceArrival = false;
+  document.addEventListener("input", function (e) {
+    if (scanModeOn && isTextEntryElement(e.target)) {
+      textEntryTouchedSinceArrival = true;
+    }
+  });
 
   var SCAN_SELECTOR = 'a[href], button:not(:disabled), input:not(:disabled):not([type="hidden"]), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
@@ -1053,11 +1079,12 @@
   }
 
   function scanTick() {
-    if (isTextEntryElement(document.activeElement)) return; // let the user keep typing
+    if (isTextEntryElement(document.activeElement) && textEntryTouchedSinceArrival) return; // let the user keep typing
     var list = scannableElements();
     if (!list.length) return;
     var currentIndex = list.indexOf(document.activeElement);
     var nextIndex = (currentIndex + 1) % list.length;
+    textEntryTouchedSinceArrival = false; // reset for whatever we land on next
     list[nextIndex].focus();
   }
 
@@ -1076,6 +1103,7 @@
 
   function setScanMode(on) {
     scanModeOn = on;
+    textEntryTouchedSinceArrival = false; // clean slate on every toggle
     scanModeToggle.setAttribute("aria-pressed", on ? "true" : "false");
     scanModeToggle.innerHTML = "";
     var icon = document.createElement("span");

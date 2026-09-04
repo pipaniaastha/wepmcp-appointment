@@ -467,28 +467,48 @@ Two things support switch access:
    Space) when the control they want is focused — activation relies
    entirely on **native browser semantics** (Enter/Space already activates
    a focused button; a focused text field is already ready to type into),
-   so there's no custom "select" mechanism to get wrong. Scanning
-   automatically pauses whenever focus lands in a free-text field (so
-   there's unlimited time to type once you've scanned your way there), and
-   <kbd>Escape</kbd> — or clicking the toggle again — stops it immediately.
+   so there's no custom "select" mechanism to get wrong. Scanning pauses
+   once the user actually starts typing in a free-text field — a genuine
+   keystroke, not merely scanning having landed there — so there's
+   unlimited time to type once you've scanned your way there, but an
+   *untouched* text field is passed through on schedule just like any other
+   control, so scanning never gets permanently stuck somewhere nothing has
+   happened. <kbd>Escape</kbd> — or clicking the toggle again — stops
+   scanning immediately.
 
 **What was verified live:** the entire on-page mechanism, in a real
-browser, using real timers and real keyboard events — not just written and
-assumed correct. This included: the scan list correctly excludes hidden
-elements (e.g. the developer tools panel while Simple mode hides it) and
-correctly includes newly-revealed ones (e.g. the "Start over" confirmation
-row's buttons only once that row is visible); focus genuinely pauses on a
-text field across multiple real timer ticks and resumes advancing once
-focus moves off it; <kbd>Escape</kbd> stops the timer for real (confirmed
-by waiting afterward and checking focus no longer moves); and changing the
-interval takes effect immediately. One real finding from this testing: in
-a browser tab that isn't the OS-focused window (true of an automated
-testing session), Chrome throttles `setInterval` timers below the
-requested rate as a power-saving measure — the tick still landed on
-exactly the correct next element when it fired, just at a slower real-world
-cadence than requested. That's expected browser behavior for any
-background tab, not a bug, but it's worth knowing if you test this with
-the window unfocused.
+browser, using real timers and real keyboard/input events — not just
+written and assumed correct. This included: the scan list correctly
+excludes hidden elements (e.g. the developer tools panel while Simple mode
+hides it) and correctly includes newly-revealed ones (e.g. the "Start over"
+confirmation row's buttons only once that row is visible); a field the user
+actually types into stays paused across multiple real timer ticks and
+resumes advancing once focus moves off it; <kbd>Escape</kbd> stops the
+timer for real (confirmed by waiting afterward and checking focus no longer
+moves); and changing the interval takes effect immediately. One real
+finding from this testing: in a browser tab that isn't the OS-focused
+window (true of an automated testing session), Chrome throttles
+`setInterval` timers below the requested rate as a power-saving measure —
+the tick still landed on exactly the correct next element when it fired,
+just at a slower real-world cadence than requested. That's expected browser
+behavior for any background tab, not a bug, but it's worth knowing if you
+test this with the window unfocused.
+
+**A real bug this shipped with, found by the user manually testing (not by
+me), then reproduced and fixed:** the first version of this pause behavior
+checked only *where* focus was (`document.activeElement` is a text field),
+not whether the user had actually typed anything there. Since scanning is
+the only thing that ever moves focus during a scan, and nothing un-pauses a
+pause that was never really "typing" in the first place, this meant
+scanning would permanently freeze the moment it reached the *first* text
+field it ever visited — even with zero user interaction, as the reporter
+demonstrated. My own earlier verification pass had tested "does it stay
+paused once someone is typing" but never specifically "does it ever get
+unstuck with nobody touching it," which is exactly the gap that let this
+ship. Fixed by tracking a real `input` event on the currently-focused field
+rather than just its focus state; reproduced the stuck-forever behavior
+live before the fix and confirmed genuine multi-field automatic advancement
+after it (`js/app.js`, `textEntryTouchedSinceArrival`).
 
 **What was not verified:** a real switch-access device (a physical switch,
 sip-and-puff controller, eye-gaze system operating in switch mode, etc.).
