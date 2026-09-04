@@ -165,8 +165,26 @@
       <li><code>list_available_actions</code> — tells the agent exactly what it can do next, given the current state.</li>
       <li><code>complete_form_field</code> — fills one field (<code>full_name</code>, <code>email</code>, <code>phone</code>, <code>appointment_type</code>, <code>date</code>, <code>time</code>, <code>notes</code>), validating it and updating the real DOM inputs on screen.</li>
       <li><code>confirm_and_submit</code> — checks the form is complete, then <em>stages</em> a review. It cannot finalize the booking itself: finalizing requires a real click on the "Confirm &amp; book appointment" button, which is wired to plain UI code, not to any tool.</li>
+      <li><code>interpret_intent</code> — the one tool that actually reasons: sends a free-form phrase (e.g. "whenever's soonest for a dental cleaning") to a real LLM, matched only against this clinic's real current appointment types/dates/open times, then runs whatever it resolves through the exact same validation as <code>complete_form_field</code>. Needs an OpenAI API key configured below. Like <code>complete_form_field</code>, it can only set field values — never stage or finalize a booking.</li>
     </ul>
     <p class="hint">"Start over" is deliberately <strong>not</strong> a tool either, for the same reason: an agent can help you fill the form, but only you can throw away your own progress or finalize a booking.</p>
+
+    <h3 id="ai-interpreter-heading">AI interpreter setup (for interpret_intent)</h3>
+    <p class="hint">
+      <code>interpret_intent</code> is the only part of this page that makes a network call. It sends your free-form
+      phrase, plus the clinic's currently-available appointment types/dates/times, directly from this browser to
+      OpenAI's API — using an API key <strong>you</strong> provide. That key is never bundled with this app, never
+      committed to its repository, and is stored only in this browser's <code>localStorage</code>; nothing else on
+      this page ever sees it. Using this tool makes real, billed calls against your own OpenAI account. Get a key at
+      <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">platform.openai.com/api-keys</a>.
+    </p>
+    <p id="openai-key-status" class="hint" role="status"></p>
+    <div class="console-row">
+      <label for="openai-key-input" style="margin:0;">OpenAI API key</label>
+      <input type="password" id="openai-key-input" autocomplete="off" spellcheck="false" placeholder="sk-..." />
+      <button type="button" class="secondary" id="openai-key-save">Save key</button>
+      <button type="button" class="secondary" id="openai-key-clear">Clear key</button>
+    </div>
 
     <h3 id="actionlog-heading">Action log</h3>
     <p class="hint">Every call to a WebMCP tool — made by a real agent through <code>document.modelContext</code>, by clicking "Review my appointment" (which runs the same <code>confirm_and_submit</code> logic), or manually below — is recorded here with a timestamp, so you can audit exactly what happened to this form and when.</p>
@@ -189,7 +207,7 @@
 </main>
 
 <footer>
-  Built as a college project demonstrating WebMCP. No backend — all state lives in this page's memory and resets on reload.
+  Built as a college project demonstrating WebMCP. No backend of its own — all state lives in this page's memory and resets on reload. The one exception is <code>interpret_intent</code>, which calls OpenAI's API directly using a key you provide yourself.
   Tool registration uses <code>document.modelContext.registerTool()</code> per the WebMCP proposal.
   See <a href="README.md">README.md</a> for full documentation and <a href="TESTING.md">TESTING.md</a> for the manual test plan.
 </footer>
@@ -197,6 +215,7 @@
 <script src="js/data.js"></script>
 <script src="js/validation.js"></script>
 <script src="js/voice.js"></script>
+<script src="js/interpret.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

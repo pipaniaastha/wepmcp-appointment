@@ -114,7 +114,7 @@ legend { font-weight: 600; padding: 0 0.4rem; }
 .field:last-child { margin-bottom: 0; }
 label { display: block; font-weight: 600; margin-bottom: 0.3rem; }
 .req-mark { color: var(--err-ink); }
-input[type=text], input[type=email], input[type=tel], input[type=date], select, textarea {
+input[type=text], input[type=email], input[type=tel], input[type=date], input[type=password], select, textarea {
   width: 100%;
   padding: 0.55rem 0.6rem;
   border: 1px solid var(--line);

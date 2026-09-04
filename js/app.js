@@ -279,11 +279,14 @@
     });
   });
 
-  manualReviewBtn.addEventListener("click", function () {
+  manualReviewBtn.addEventListener("click", async function () {
     // Runs through the same instrumented path as a real agent tool call
     // (see runTool below), so it shows up in the Action log too — clicking
     // this button performs literally the same action confirm_and_submit does.
-    var res = runTool("confirm_and_submit", {});
+    // instrumentedExecute (and therefore runTool) is always async now, to
+    // support interpret_intent's real network call, so this awaits it —
+    // harmless for confirm_and_submit, which resolves synchronously anyway.
+    var res = await runTool("confirm_and_submit", {});
     if (res.isError) {
       var problems = missingOrInvalidFields();
       if (problems.length) {
@@ -408,6 +411,154 @@
     return { content: [{ type: "text", text: msg2 }] };
   }
 
+  // ---------- interpret_intent: the one tool that actually reasons ----------
+  // Every other tool above is pure input validation — regex/format checks,
+  // array membership, direct state/DOM writes, no model in the loop. This
+  // tool is different: it sends the user's free-form phrase to a real LLM
+  // (OpenAI) and asks it to resolve the ambiguity, but the LLM's output is
+  // NOT trusted directly. Two independent safeguards apply before anything
+  // reaches state:
+  //   1. The system prompt (Interpret.buildSystemPrompt) shows the model
+  //      ONLY the clinic's real, currently-valid appointment types, dates,
+  //      and open times — it has no way to "know about" a slot that
+  //      doesn't exist.
+  //   2. Whatever the model proposes is still run through applyFieldValue()
+  //      — the EXACT SAME function complete_form_field uses — so even a
+  //      confidently-wrong or stale answer (e.g. a slot that got booked
+  //      between the prompt being built and the model responding) is
+  //      rejected by real validation, not silently applied.
+  // If the model can't confidently resolve something, it's instructed to
+  // say so via "unresolved"/"clarification" rather than guess — and this
+  // tool passes that through honestly rather than picking an answer itself.
+  //
+  // VERIFICATION NOTE (implemented-to-spec, not live-verified by me): this
+  // environment has no OpenAI API key available to it, so the actual
+  // network round-trip to api.openai.com has NOT been exercised with a
+  // real key or a real model response in this session. What HAS been
+  // verified: the prompt-building and response-parsing logic
+  // (tests/interpret.test.js, pure/automated), and the full pipeline from
+  // a mocked fetch() response through parsing, per-field validation, and
+  // state/DOM writes, exercised live in a real browser by substituting a
+  // canned response for the network call — the same disclosed technique
+  // used for SpeechRecognition. See README.md for the full disclosure and
+  // for how to test this yourself with a real key.
+  var OPENAI_KEY_STORAGE = "webmcp-appointment:openai-key";
+  var OPENAI_MODEL = "gpt-4o-mini";
+  var INTERPRET_FIELDS = ["appointment_type", "date", "time", "notes"];
+
+  function getOpenAIKey() {
+    try {
+      return localStorage.getItem(OPENAI_KEY_STORAGE) || "";
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function buildDateTimeTable() {
+    return AVAILABLE_DATES.map(function (iso) {
+      return {
+        date: iso,
+        label: humanDate(iso),
+        openTimes: openTimesFor(iso, BOOKED_SLOTS).map(function (t) { return { value: t, label: TIME_LABELS[t] }; })
+      };
+    });
+  }
+
+  // The one network call in this whole app. Talks directly to OpenAI using
+  // a key the user supplied themselves (see the "AI interpreter" section
+  // wiring below) — never a key bundled with or committed to this project.
+  async function callOpenAIForIntent(text, apiKey) {
+    var systemPrompt = Interpret.buildSystemPrompt(APPOINTMENT_TYPES, buildDateTimeTable());
+    var response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + apiKey
+      },
+      body: JSON.stringify({
+        model: OPENAI_MODEL,
+        temperature: 0,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: text }
+        ]
+      })
+    });
+    if (!response.ok) {
+      var errText = "";
+      try { errText = await response.text(); } catch (e) { /* ignore */ }
+      throw new Error("OpenAI API error " + response.status + (errText ? ": " + errText : ""));
+    }
+    var data = await response.json();
+    var content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+    if (!content) throw new Error("OpenAI's response had no message content.");
+    return content;
+  }
+
+  async function toolInterpretIntent(args) {
+    args = args || {};
+    var text = (args.text === undefined || args.text === null) ? "" : String(args.text).trim();
+    if (!text) {
+      return { content: [{ type: "text", text: "Missing required argument: text" }], isError: true };
+    }
+
+    var apiKey = getOpenAIKey();
+    if (!apiKey) {
+      return {
+        content: [{
+          type: "text",
+          text: "No OpenAI API key is configured, so interpret_intent can't run. This tool never guesses without " +
+            "one — ask the human to open the \"AI interpreter\" section on the page, paste an OpenAI API key " +
+            "(stored only in their browser), and try again."
+        }],
+        isError: true
+      };
+    }
+
+    var rawContent;
+    try {
+      rawContent = await callOpenAIForIntent(text, apiKey);
+    } catch (e) {
+      return { content: [{ type: "text", text: "Couldn't reach the AI interpreter: " + e.message }], isError: true };
+    }
+
+    var parsed = Interpret.parseInterpretationResponse(rawContent, INTERPRET_FIELDS);
+    if (!parsed.ok) {
+      return {
+        content: [{ type: "text", text: "The AI's response couldn't be used: " + parsed.error + " Try rephrasing, or fill the field(s) manually." }],
+        isError: true
+      };
+    }
+
+    var setSummaries = [];
+    var rejectedSummaries = [];
+    Object.keys(parsed.resolved).forEach(function (field) {
+      var value = parsed.resolved[field];
+      var result = applyFieldValue(field, value); // same validation path complete_form_field uses
+      if (result.ok) {
+        setSummaries.push(fieldLabel(field) + " set to " + JSON.stringify(state.fields[field]));
+      } else {
+        rejectedSummaries.push(fieldLabel(field) + ": the AI proposed " + JSON.stringify(value) + ", but that failed validation (" + result.error + ")");
+      }
+    });
+
+    var lines = ["Interpreted \"" + text + "\"."];
+    if (setSummaries.length) lines.push("Set: " + setSummaries.join("; ") + ".");
+    if (rejectedSummaries.length) lines.push("Rejected — reasoning does not bypass validation: " + rejectedSummaries.join("; ") + ".");
+    if (parsed.unresolved.length) lines.push("Could not confidently resolve: " + parsed.unresolved.join(", ") + ".");
+    if (parsed.clarification) lines.push("Clarification needed: " + parsed.clarification);
+    if (!setSummaries.length && !rejectedSummaries.length && !parsed.unresolved.length && !parsed.clarification) {
+      lines.push("Nothing was resolved — try rephrasing, or fill the fields manually.");
+    }
+
+    announce(setSummaries.length
+      ? "AI interpreted your request and set: " + setSummaries.join(", ") + "."
+      : "AI couldn't confidently interpret that request.");
+
+    return { content: [{ type: "text", text: lines.join(" ") }], isError: setSummaries.length === 0 };
+  }
+
   // ---------- Tool registry (shared by real WebMCP registration and the console) ----------
   var TOOL_DEFS = [
     {
@@ -441,6 +592,19 @@
       description: "Validate that all required fields are complete and stage the appointment as a visible review summary for the human to check. This tool NEVER finalizes the booking itself — finalizing requires an explicit, physical click by the human user on the 'Confirm & book appointment' button, which is not reachable by any tool. Safe to call again; it will not skip human confirmation.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       execute: function () { return toolConfirmAndSubmit(); }
+    },
+    {
+      name: "interpret_intent",
+      description: "Interpret a free-form, ambiguous natural-language appointment request (e.g. \"book me something Tuesday afternoon for a check-up\" or \"whenever's soonest for a dental cleaning\") using a real LLM call, resolved ONLY against this clinic's actual current appointment types, available dates, and open time slots — it never invents a value that doesn't exist. Every value it proposes is then run through the exact same validation complete_form_field uses, so a confident-sounding but invalid answer is still rejected, not silently applied. Requires the human to have configured their own OpenAI API key in the page's \"AI interpreter\" section; fails honestly (does not guess) if none is configured. Like complete_form_field, this can only set field values — it cannot stage or finalize a booking.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          text: { type: "string", description: "The free-form natural-language request to interpret, e.g. \"book me something Tuesday afternoon for a check-up\"." }
+        },
+        required: ["text"],
+        additionalProperties: false
+      },
+      execute: function (args) { return toolInterpretIntent(args); }
     }
   ];
 
@@ -494,13 +658,17 @@
   // Wraps a tool's raw execute function so every call — whether it comes
   // from a real agent via document.modelContext, the manual test console,
   // or the "Review my appointment" button aliasing confirm_and_submit — is
-  // logged identically and never throws past this boundary.
+  // logged identically and never throws past this boundary. Always async
+  // (interpret_intent's execute returns a Promise for its real network
+  // call; `await` on a plain, already-resolved value from the other four
+  // synchronous tools resolves immediately, so this is fully backward
+  // compatible with them — every caller of def.run/runTool must await it).
   function instrumentedExecute(def) {
-    return function (args) {
+    return async function (args) {
       var argsForLog = (args === undefined || args === null) ? {} : args;
       var result;
       try {
-        result = def.execute(argsForLog);
+        result = await def.execute(argsForLog);
       } catch (e) {
         result = { content: [{ type: "text", text: "Tool \"" + def.name + "\" threw an unexpected error: " + e.message }], isError: true };
       }
@@ -541,7 +709,7 @@
       }
     });
     banner.className = "supported";
-    banner.textContent = "✅ WebMCP detected in this browser — all four tools are registered with document.modelContext and an AI agent can call them directly.";
+    banner.textContent = "✅ WebMCP detected in this browser — all " + TOOL_DEFS.length + " tools are registered with document.modelContext and an AI agent can call them directly.";
   } else {
     banner.className = "unsupported";
     banner.textContent = "ℹ️ This browser doesn't expose document.modelContext / navigator.modelContext yet (WebMCP is still an early proposal, behind a flag in some browsers). The exact same tool functions are still fully working below — use the Tool Call Console to drive them.";
@@ -556,7 +724,8 @@
     describe_current_state: {},
     list_available_actions: {},
     complete_form_field: { field: "full_name", value: "Jordan Rivera" },
-    confirm_and_submit: {}
+    confirm_and_submit: {},
+    interpret_intent: { text: "book me something Tuesday afternoon for a check-up" }
   };
 
   TOOL_DEFS.forEach(function (def) {
@@ -588,6 +757,44 @@
 
   document.getElementById("console-clear").addEventListener("click", function () {
     clearActionLog();
+  });
+
+  // ---------- AI interpreter (OpenAI key) setup — for interpret_intent ----------
+  var openaiKeyInput = document.getElementById("openai-key-input");
+  var openaiKeyStatus = document.getElementById("openai-key-status");
+
+  function refreshOpenAIKeyStatus() {
+    var configured = !!getOpenAIKey();
+    openaiKeyStatus.textContent = configured
+      ? "✅ Key configured — interpret_intent will make real, billed calls to OpenAI using it."
+      : "No key configured yet — interpret_intent will fail with a clear message (never guesses) until one is set.";
+  }
+  refreshOpenAIKeyStatus();
+
+  document.getElementById("openai-key-save").addEventListener("click", function () {
+    var value = openaiKeyInput.value.trim();
+    if (!value) {
+      announce("Enter a key before saving.");
+      return;
+    }
+    try {
+      localStorage.setItem(OPENAI_KEY_STORAGE, value);
+    } catch (e) {
+      announce("Couldn't save the key: " + e.message);
+      return;
+    }
+    openaiKeyInput.value = "";
+    refreshOpenAIKeyStatus();
+    announce("OpenAI API key saved to this browser.");
+  });
+
+  document.getElementById("openai-key-clear").addEventListener("click", function () {
+    try {
+      localStorage.removeItem(OPENAI_KEY_STORAGE);
+    } catch (e) { /* ignore */ }
+    openaiKeyInput.value = "";
+    refreshOpenAIKeyStatus();
+    announce("OpenAI API key cleared.");
   });
 
   // ---------- Simple / cognitive-load mode wiring ----------

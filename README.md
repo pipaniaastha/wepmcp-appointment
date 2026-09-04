@@ -13,9 +13,10 @@ Source: **[github.com/pipaniaastha/wepmcp-appointment](https://github.com/pipani
 
 - [What is WebMCP?](#what-is-webmcp)
 - [What this project does](#what-this-project-does)
-- [The four tools](#the-four-tools)
+- [The five tools](#the-five-tools)
 - [Why `confirm_and_submit` can't finalize the booking](#why-confirm_and_submit-cant-finalize-the-booking)
-- [Beyond the four tools](#beyond-the-four-tools)
+- [`interpret_intent`: the tool that actually reasons](#interpret_intent-the-tool-that-actually-reasons)
+- [Beyond the tools](#beyond-the-tools)
 - [Voice mapping and switch-access compatibility](#voice-mapping-and-switch-access-compatibility)
 - [Project structure](#project-structure)
 - [Accessibility](#accessibility)
@@ -59,8 +60,11 @@ exercised and demonstrated in any browser.
 
 ## What this project does
 
-This is a **static, backend-free** clinic appointment form. A patient (or an
-agent acting for them) fills in:
+This is a **static, almost entirely backend-free** clinic appointment form.
+(The one exception — `interpret_intent` making a direct, user-keyed call to
+OpenAI's API — is called out explicitly in its own section below; nothing
+else in this app makes a network call of any kind.) A patient (or an agent
+acting for them) fills in:
 
 - Full name, email, phone (required: name, email)
 - Appointment type, preferred date, preferred time (all required)
@@ -71,16 +75,18 @@ chosen date/time slot is actually open, using a small in-memory "already
 booked by another patient" seed data set — and only allows staging a review
 once every required field is valid.
 
-The page registers **four WebMCP tools** that mirror this workflow, so an
-agent can drive the entire data-entry part of the task. What the agent
-*cannot* do is press the final "Confirm & book appointment" button — that is
-wired to plain UI code that no tool can reach. See
+The page registers **five WebMCP tools** that mirror this workflow, so an
+agent can drive the entire data-entry part of the task — including, via
+`interpret_intent`, starting from a vague spoken-language request rather
+than already-resolved field values. What the agent *cannot* do, regardless
+of which tool it uses, is press the final "Confirm & book appointment"
+button — that is wired to plain UI code that no tool can reach. See
 ["Why `confirm_and_submit` can't finalize the booking"](#why-confirm_and_submit-cant-finalize-the-booking).
 
-There is no backend and no persistence: all state lives in the page's memory
-and resets on reload (or via the "Start over" button).
+There is no persistence: all state lives in the page's memory and resets on
+reload (or via the "Start over" button).
 
-## The four tools
+## The five tools
 
 | Tool | Purpose |
 |---|---|
@@ -88,11 +94,21 @@ and resets on reload (or via the "Start over" button).
 | `list_available_actions` | Given the current state, returns a concrete list of next steps — e.g. exactly which fields still need values and why, or "stage for confirmation," or "wait on the human to click Confirm." Saves the agent from re-deriving state logic itself. |
 | `complete_form_field` | Fills exactly one field (`full_name`, `email`, `phone`, `appointment_type`, `date`, `time`, or `notes`). Runs the same validation the human-facing form uses (format checks, valid-option checks, open-slot checks) and, on success, writes into the *real* DOM inputs — this is not a shadow copy, it's the same state the human sees and can edit further. |
 | `confirm_and_submit` | Checks that every required field is currently valid, and if so, renders the review panel and moves the booking to `awaiting_confirmation`. It **never** finalizes the booking — see below. |
+| `interpret_intent` | Resolves a free-form, ambiguous phrase (e.g. "whenever's soonest for a dental cleaning") into concrete field values via a real LLM call, matched only against real current data, then set through the same validation `complete_form_field` uses. **This is the only one of the five that involves any reasoning** — see its own section below. |
 
 Every tool returns the same `{ content: [{ type: "text", text: "..." }], isError?: boolean }`
 shape used by MCP-style tool results, so the response text is meant to be
 read directly by an LLM (it includes reasons for failures, valid option
 lists, and next-step hints), not just parsed programmatically.
+
+**On the first four tools, to be direct about it:** `describe_current_state`,
+`list_available_actions`, `complete_form_field`, and `confirm_and_submit` are
+pure input validation — regex/format checks, array-membership lookups, and
+direct state/DOM writes. No model, no reasoning, no interpretation of
+ambiguity anywhere in them; an agent has to already know the exact value it
+wants before calling them. That's a deliberate, honest design point, not an
+oversight — see the next section for the one tool where that's no longer
+true.
 
 ## Why `confirm_and_submit` can't finalize the booking
 
@@ -117,7 +133,8 @@ So the two concerns are split by construction, not by convention:
   `#confirm-btn` element (see `js/app.js`, the comment reads *"The ONLY code
   path that finalizes a booking. No WebMCP tool calls this."*). That
   listener is never invoked by, referenced by, or reachable from any of the
-  four registered tools. There's no tool that dispatches a synthetic click,
+  five registered tools — including `interpret_intent`, which can only ever
+  set field values, never touch `status`. There's no tool that dispatches a synthetic click,
   no "auto-confirm" flag, no way to skip the step through repeated tool
   calls — calling `confirm_and_submit` again after it has already staged a
   review just re-validates and re-renders the same review, as its own
@@ -135,10 +152,132 @@ The same reasoning is why **"Start over" is a plain button, not a tool**
 can fill in your form shouldn't also be able to unilaterally throw away your
 in-progress data.
 
-## Beyond the four tools
+## `interpret_intent`: the tool that actually reasons
 
-Three more features round out the demo. None of them add a fifth WebMCP
-tool — that's deliberate, and consistent with the reasoning above: only
+> **Verification status, stated plainly:** this environment has no OpenAI
+> API key available to it, so the literal network round-trip to
+> `api.openai.com` with a real key and a real model response has **not**
+> been exercised by me in this session. Everything short of that has: the
+> prompt-building and response-parsing logic is pure and automated-tested
+> (`tests/interpret.test.js`), and the full pipeline — from a phrase, through
+> a (mocked) model response, through real per-field validation, to actual
+> DOM/state writes — was verified live in a real browser by substituting a
+> canned response for `fetch()`, the same disclosed technique used for
+> `SpeechRecognition` in the voice-mapping work below. See "What was tested"
+> below for the exact scenarios covered this way, and how to test the real
+> network call yourself with your own key.
+
+### Why this one is different
+
+Every other tool in this app (see the table above) is pure input
+validation with no model in the loop. `interpret_intent` exists specifically
+to close that gap: it takes a genuinely ambiguous phrase — "book me
+something Tuesday afternoon for a check-up," "whenever's soonest for a
+dental cleaning" — and uses a real LLM call to resolve it, rather than
+requiring the caller to already know the exact `field`/`value` pairs
+`complete_form_field` expects.
+
+### How it works
+
+1. **The prompt shows the model only real, current data.** `js/interpret.js`'s
+   `buildSystemPrompt()` lists every valid `appointment_type`, every
+   currently-available date, and — per date — only the times that are
+   actually still open right now (a booked slot is simply not in the list).
+   The model is explicitly instructed never to invent a value outside these
+   lists, and to leave a field unresolved (with a `clarification` question)
+   rather than guess when the request is genuinely ambiguous.
+2. **The model must respond with strict JSON** (`{"resolved": {...},
+   "unresolved": [...], "clarification": "..."}`), requested via OpenAI's
+   `response_format: {type: "json_object"}` and parsed defensively by
+   `Interpret.parseInterpretationResponse()` — which rejects (rather than
+   trusts) any unknown field name, non-string value, or malformed shape, so
+   a broken or adversarial model response can't corrupt app state.
+3. **Every resolved value still goes through `applyFieldValue()`** — the
+   *exact* function `complete_form_field` and typing both use. This is the
+   core safety property the tool exists to demonstrate: reasoning feeds
+   validation, it does not bypass it. If the model confidently proposes a
+   time slot that's actually booked (stale data, or a hallucination),
+   `applyFieldValue` rejects that specific field exactly as it would reject
+   a bad value from any other source — while still applying whichever other
+   fields *did* pass validation. This was directly verified (see below), not
+   just designed and assumed to work.
+4. **It still can't stage or finalize a booking.** `interpret_intent` can
+   only set field values, the same boundary `complete_form_field` has. It
+   has no path to `confirm_and_submit`'s logic or to the confirm button.
+
+### The one network call in this app
+
+This is the only feature that talks to a network. It's a direct,
+browser-to-OpenAI `fetch()` call (`js/app.js`'s `callOpenAIForIntent`) using
+an API key **the user supplies themselves**, pasted into the "AI
+interpreter" section of the page and stored only in that browser's
+`localStorage`. This was a deliberate architecture choice, not the only
+option:
+
+- **Why not a backend proxy holding a shared key?** This project is
+  deployed as a static site (GitHub Pages) with no server of its own to
+  hold a secret — standing one up just for this would be a much larger
+  scope change than "add a tool," and would mean *my* key (or whoever
+  deploys it) pays for *everyone's* usage.
+- **Why not a fully local/in-browser model** (e.g. WebLLM)? That would avoid
+  needing any key at all, and is worth considering as a future iteration.
+  It was set aside here mainly because small in-browser models are
+  meaningfully weaker at reliable structured-JSON extraction than a real
+  hosted model, and a multi-hundred-MB-plus model download doesn't fit this
+  project's "open the page, it just works" feel.
+- **Trade-offs of bring-your-own-key, stated honestly:** the key sits in
+  `localStorage` in **plain text** — readable by any script running on this
+  exact origin (there isn't one here beyond this app's own code, but this is
+  a real, general caveat of the pattern, not a nonexistent risk) and visible
+  in DevTools to anyone with access to the device. Using the tool makes
+  real, billed API calls against the user's own OpenAI account. Both
+  caveats are stated on the page itself, next to the key input, not just
+  here.
+
+### What was tested (and what wasn't)
+
+Verified live, in a real browser, by mocking `window.fetch` to intercept
+only requests to `api.openai.com` and return a canned response (everything
+else — the actual tool call, argument parsing, validation, DOM writes,
+Action log entry — is the real, unmodified code path):
+
+- A realistic ambiguous phrase ("book me something Tuesday afternoon for a
+  check-up") resolving cleanly to real values, all three fields actually
+  set on the real form.
+- A genuinely ambiguous phrase ("whenever's soonest, I don't really mind")
+  where the mocked model returns no resolved fields and a clarification
+  question — confirming the tool surfaces that honestly and **sets
+  nothing**, rather than picking an answer.
+- A model response that confidently proposes a real appointment type and
+  date but a time slot that's actually booked — confirming that field is
+  **rejected by real validation** while the two valid fields still get set.
+  This is the direct proof that reasoning doesn't bypass validation.
+- A non-JSON model response (e.g. a plain-English sentence instead of the
+  requested JSON) — confirmed to fail gracefully with a clear message, not
+  crash.
+- An OpenAI API error response (e.g. HTTP 401 for a bad key) — confirmed to
+  surface a clear, honest error rather than hang or silently fail.
+- No API key configured at all — confirmed the tool refuses outright with
+  an explanatory message, before ever attempting a network call.
+- A missing `text` argument — confirmed a clear validation error.
+- The key-management UI itself (save, clear, status text updates,
+  `localStorage` persistence) and that the whole "AI interpreter" section is
+  hidden in Simple mode along with the rest of the developer-facing panel.
+
+**Not verified:** an actual live call to `api.openai.com` with a real key
+and a real model producing a real transcript of its reasoning over a real
+ambiguous phrase. To test that yourself: get a key at
+[platform.openai.com/api-keys](https://platform.openai.com/api-keys), paste
+it into the "AI interpreter" section, and either type a phrase into the Tool
+Call Console's `interpret_intent` arguments or ask an agent with WebMCP
+access to call it. `tests/interpret.test.js` covers the deterministic
+prompt/parsing logic (20 cases) with `npm test`.
+
+## Beyond the tools
+
+Three more features round out the demo, on top of the five tools above.
+None of these three add a sixth WebMCP tool — that's deliberate, and
+consistent with the reasoning above: only
 capabilities an agent legitimately needs become tools; everything else stays
 human-only UI.
 
@@ -336,14 +475,19 @@ webmcp-appointment/
 │   │                        browser.
 │   ├── voice.js              Pure transcript-matching/normalization logic
 │   │                        for voice input. Same pattern, same reason.
-│   └── app.js               State, DOM wiring, the four WebMCP tool
+│   ├── interpret.js          Pure prompt-building + response-parsing logic
+│   │                        for interpret_intent. Same pattern, same
+│   │                        reason — the actual OpenAI fetch() call is the
+│   │                        one impure part, and lives in app.js.
+│   └── app.js               State, DOM wiring, all five WebMCP tool
 │                            implementations + registration, the Action log,
 │                            the Tool Call Console, Simple mode, voice
-│                            input, and scan mode.
+│                            input, scan mode, and the OpenAI key UI.
 ├── tests/
 │   ├── validation.test.js   node:test unit tests for js/data.js and
 │   │                        js/validation.js (36 cases).
-│   └── voice.test.js         node:test unit tests for js/voice.js (15 cases).
+│   ├── voice.test.js         node:test unit tests for js/voice.js (15 cases).
+│   └── interpret.test.js     node:test unit tests for js/interpret.js (20 cases).
 ├── scripts/
 │   └── serve.js              Zero-dependency static file server for local dev.
 ├── TESTING.md               Manual end-to-end test plan (tools + UI + a11y).
@@ -351,7 +495,7 @@ webmcp-appointment/
 └── .gitignore
 ```
 
-`data.js`, `validation.js`, and `voice.js` all use a small UMD-style wrapper
+`data.js`, `validation.js`, `voice.js`, and `interpret.js` all use a small UMD-style wrapper
 (`if (typeof module !== "undefined") { module.exports = ... } else { global.X
 = ... }`) so the *identical* file is loaded by `<script>` tags in the browser
 and by `require()` in the Node test suite — there's exactly one copy of each
@@ -453,25 +597,29 @@ server (uses only Node's built-in `http`/`fs` modules) — nothing to
 
 ## Testing
 
-**Automated:** `js/data.js`, `js/validation.js`, and `js/voice.js` are pure
-functions (no DOM access), so every validation branch, every
-date/slot-availability helper, and the voice-transcript matching logic is
-covered by a Node test suite:
+**Automated:** `js/data.js`, `js/validation.js`, `js/voice.js`, and
+`js/interpret.js` are pure functions (no DOM, no network access), so every
+validation branch, every date/slot-availability helper, the voice-transcript
+matching logic, and the interpret_intent prompt/response logic is covered by
+a Node test suite:
 
 ```bash
 npm test
 ```
 
-This runs 51 cases via the built-in `node:test` runner (Node ≥ 18, no test
+This runs 71 cases via the built-in `node:test` runner (Node ≥ 18, no test
 framework dependency) covering: every required/optional field's valid and
 invalid paths, the booked-slot conflict check, the "must pick a date before a
 time" ordering rule, unknown-field/unknown-option handling, the
-date-generation and open-slot helpers in `data.js`, and spoken-transcript
+date-generation and open-slot helpers in `data.js`, spoken-transcript
 matching/normalization in `voice.js` (see
 ["Voice mapping"](#voice-mapping-and-switch-access-compatibility) for what
-this suite does and doesn't prove).
+this suite does and doesn't prove), and interpret_intent's prompt-building
+and defensive response-parsing in `interpret.js` (see
+["interpret_intent: the tool that actually reasons"](#interpret_intent-the-tool-that-actually-reasons)
+for the same distinction applied there).
 
-**Manual:** the DOM wiring, the four tools' `execute` functions, the review
+**Manual:** the DOM wiring, the five tools' `execute` functions, the review
 → confirm flow, focus management, and live-region announcements are best
 verified by hand in a real browser (that's how they were verified while
 building this — see the walkthrough above). [`TESTING.md`](TESTING.md) is a
@@ -490,15 +638,20 @@ validation path, plus a UI/accessibility checklist.
    proposal, exposing `document.modelContext.registerTool` /
    `navigator.modelContext.registerTool`): just load the page. The banner at
    the top switches from the amber "not detected" message to a green
-   "✅ WebMCP detected... all four tools are registered" message, and any
+   "✅ WebMCP detected... all 5 tools are registered" message, and any
    agent with access to that browsing context can enumerate and call
    `describe_current_state`, `list_available_actions`, `complete_form_field`,
-   and `confirm_and_submit` directly. A natural test prompt for an agent:
+   `confirm_and_submit`, and `interpret_intent` directly. Two natural test
+   prompts for an agent:
    *"Book me a general checkup on the next available weekday afternoon, my
    name is [X], email [Y]."* — watch it call `describe_current_state` first,
    fill fields one at a time with `complete_form_field`, call
    `confirm_and_submit`, and then correctly stop and tell you a human needs
-   to click the button.
+   to click the button; or, with an OpenAI key configured (see
+   ["interpret_intent"](#interpret_intent-the-tool-that-actually-reasons)),
+   *"Ask the page to interpret 'whenever's soonest for a dental cleaning' for
+   me"* — watch it call `interpret_intent` and then either fill in the rest
+   itself or relay a clarification question back to you.
 3. Either way, open the browser's DevTools console — the page logs a
    `console.error` if a tool fails to register, otherwise it stays silent.
 4. Watch the **Action log** in the right-hand panel while an agent works —
@@ -573,6 +726,17 @@ repo follows, generalized:
    visible (see `instrumentedExecute()` in `js/app.js`) so a human — or a
    developer debugging the integration — can see exactly what an agent did
    and when, without opening DevTools.
+6. **Optional fifth pattern — a tool that actually reasons.** If your tool
+   set needs to resolve genuine ambiguity (free-form intent, not just typed
+   values), that's a materially different kind of tool from the four above,
+   and worth keeping visibly separate: see
+   [`interpret_intent`](#interpret_intent-the-tool-that-actually-reasons) for
+   the shape this takes here — a real LLM call whose output is shown *only*
+   your real current data and is still forced through the same validation
+   your deterministic tools use, never trusted directly. If you don't
+   control a backend to hold an API key, bring-your-own-key stored in
+   `localStorage` (as done here) is a reasonable static-site-compatible
+   option, with the trade-offs spelled out in that section.
 
 That's the entire pattern: a handful of small, honestly-described functions,
 registered behind a feature check, with one clear line an agent structurally
@@ -597,10 +761,14 @@ minute or two.
   readable surface where the WebMCP tool wiring is easy to find and audit
   (`js/app.js`, search for `TOOL_DEFS`). A build step would add indirection
   without adding capability here.
-- **`js/data.js` and `js/validation.js` have zero DOM access on purpose** —
-  that's what makes them testable in plain Node without a headless browser.
-  `js/app.js` is the only file that touches `document`.
+- **`js/data.js`, `js/validation.js`, `js/voice.js`, and `js/interpret.js`
+  have zero DOM/network access on purpose** — that's what makes them
+  testable in plain Node without a headless browser. `js/app.js` is the
+  only file that touches `document`, `SpeechRecognition`, or `fetch`.
 - **Booked slots are seeded relative to "today," not hardcoded dates**, so
   the demo's "this slot is already taken" case stays realistic no matter
   when you load the page (see `ClinicData.seedBookedSlots` in
   `js/data.js`).
+- **`interpret_intent` is the one deliberate exception to "no dependencies,
+  no network calls"** — see its own section above for exactly why, and what
+  that trade-off costs.
